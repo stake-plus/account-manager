@@ -8,9 +8,10 @@ import (
 	"sync"
 
 	gsrpc "github.com/centrifuge/go-substrate-rpc-client/v4"
-	"github.com/centrifuge/go-substrate-rpc-client/v4/types"
+	gstypes "github.com/centrifuge/go-substrate-rpc-client/v4/types"
 	"github.com/stake-plus/account-manager/src/account-monitor/components/config"
 	"github.com/stake-plus/account-manager/src/account-monitor/components/database"
+	types "github.com/stake-plus/account-manager/src/account-monitor/components/types"
 )
 
 type Manager struct {
@@ -43,7 +44,7 @@ func (m *Manager) getClient(networkName string) (*gsrpc.SubstrateAPI, error) {
 		return nil, err
 	}
 
-	var network *database.Network
+	var network *types.Network
 	for i := range networks {
 		if networks[i].Name == networkName {
 			network = &networks[i]
@@ -151,42 +152,42 @@ func (m *Manager) discoverAssets(api *gsrpc.SubstrateAPI, networkID uint) {
 	// and iterating through all asset IDs
 }
 
-func (m *Manager) GetBalance(networkName, address string) (database.Balance, error) {
+func (m *Manager) GetBalance(networkName, address string) (types.Balance, error) {
 	api, err := m.getClient(networkName)
 	if err != nil {
-		return database.Balance{}, err
+		return types.Balance{}, err
 	}
 
 	// Get metadata first
 	meta, err := api.RPC.State.GetMetadataLatest()
 	if err != nil {
-		return database.Balance{}, err
+		return types.Balance{}, err
 	}
 
 	// Decode the address
-	accountID, err := types.NewAccountIDFromHexString(address)
+	accountID, err := gstypes.NewAccountIDFromHexString(address)
 	if err != nil {
 		// Try SS58 decode
-		_, err = types.NewAddressFromHexAccountID(address)
+		_, err = gstypes.NewAddressFromHexAccountID(address)
 		if err != nil {
-			return database.Balance{}, fmt.Errorf("invalid address: %s", address)
+			return types.Balance{}, fmt.Errorf("invalid address: %s", address)
 		}
 	}
 
 	// Get account info
-	key, err := types.CreateStorageKey(meta, "System", "Account", accountID[:])
+	key, err := gstypes.CreateStorageKey(meta, "System", "Account", accountID[:])
 	if err != nil {
-		return database.Balance{}, err
+		return types.Balance{}, err
 	}
 
-	var accountInfo types.AccountInfo
+	var accountInfo gstypes.AccountInfo
 	ok, err := api.RPC.State.GetStorageLatest(key, &accountInfo)
 	if err != nil || !ok {
-		return database.Balance{}, err
+		return types.Balance{}, err
 	}
 
 	// Convert to our balance type
-	balance := database.Balance{
+	balance := types.Balance{
 		Free:       accountInfo.Data.Free.Int,
 		Reserved:   accountInfo.Data.Reserved.Int,
 		MiscFrozen: accountInfo.Data.MiscFrozen.Int,

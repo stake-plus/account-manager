@@ -6,6 +6,7 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+	types "github.com/stake-plus/account-manager/src/account-monitor/components/types"
 )
 
 type DB struct {
@@ -57,8 +58,8 @@ func LoadSettings(db *DB) (map[string]string, error) {
 }
 
 // GetNetworks retrieves all active networks
-func (db *DB) GetNetworks() ([]Network, error) {
-	var networks []Network
+func (db *DB) GetNetworks() ([]types.Network, error) {
+	var networks []types.Network
 
 	rows, err := db.Query(`
 		SELECT id, name, display_name, network_type, rpc_url, ws_url, 
@@ -72,7 +73,7 @@ func (db *DB) GetNetworks() ([]Network, error) {
 	defer rows.Close()
 
 	for rows.Next() {
-		var n Network
+		var n types.Network
 		err := rows.Scan(&n.ID, &n.Name, &n.DisplayName, &n.NetworkType,
 			&n.RPCURL, &n.WSURL, &n.Decimals, &n.Symbol, &n.SS58Prefix,
 			&n.Active, &n.LastCheckedBlock)
@@ -86,8 +87,8 @@ func (db *DB) GetNetworks() ([]Network, error) {
 }
 
 // GetAccounts retrieves all monitored accounts
-func (db *DB) GetAccounts() ([]Account, error) {
-	var accounts []Account
+func (db *DB) GetAccounts() ([]types.Account, error) {
+	var accounts []types.Account
 
 	rows, err := db.Query(`
 		SELECT id, address, address_type, name, description, 
@@ -101,7 +102,7 @@ func (db *DB) GetAccounts() ([]Account, error) {
 	defer rows.Close()
 
 	for rows.Next() {
-		var a Account
+		var a types.Account
 		err := rows.Scan(&a.ID, &a.Address, &a.AddressType, &a.Name,
 			&a.Description, &a.MonitorEnabled, &a.DiscordNotify)
 		if err != nil {
@@ -114,7 +115,7 @@ func (db *DB) GetAccounts() ([]Account, error) {
 }
 
 // UpdateBalance updates or inserts a balance record
-func (db *DB) UpdateBalance(accountID, networkID, tokenID uint, balance Balance) error {
+func (db *DB) UpdateBalance(accountID, networkID, tokenID uint, balance types.Balance) error {
 	_, err := db.Exec(`
 		INSERT INTO balances (account_id, network_id, network_token_id, free, reserved, 
 		                     misc_frozen, fee_frozen, bonded, total)
@@ -127,22 +128,22 @@ func (db *DB) UpdateBalance(accountID, networkID, tokenID uint, balance Balance)
 		bonded = VALUES(bonded),
 		total = VALUES(total),
 		last_updated = CURRENT_TIMESTAMP
-	`, accountID, networkID, tokenID, balance.Free, balance.Reserved,
-		balance.MiscFrozen, balance.FeeFrozen, balance.Bonded, balance.Total)
+	`, accountID, networkID, tokenID, balance.Free.String(), balance.Reserved.String(),
+		balance.MiscFrozen.String(), balance.FeeFrozen.String(), balance.Bonded.String(), balance.Total.String())
 
 	return err
 }
 
 // RecordBalanceChange records a balance change in history
-func (db *DB) RecordBalanceChange(change BalanceChange) error {
+func (db *DB) RecordBalanceChange(change types.BalanceChange) error {
 	_, err := db.Exec(`
 		INSERT INTO balance_history (balance_id, account_id, network_id, network_token_id,
 		                            free_before, free_after, total_before, total_after,
 		                            change_amount, change_type, tx_hash, block_number)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, change.BalanceID, change.AccountID, change.NetworkID, change.TokenID,
-		change.FreeBefore, change.FreeAfter, change.TotalBefore, change.TotalAfter,
-		change.ChangeAmount, change.ChangeType, change.TxHash, change.BlockNumber)
+		change.FreeBefore.String(), change.FreeAfter.String(), change.TotalBefore.String(), change.TotalAfter.String(),
+		change.ChangeAmount.String(), change.ChangeType, change.TxHash.String, change.BlockNumber.Int64)
 
 	return err
 }

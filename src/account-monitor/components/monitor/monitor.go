@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"math/big"
@@ -11,6 +12,7 @@ import (
 	"github.com/stake-plus/account-manager/src/account-monitor/components/database"
 	"github.com/stake-plus/account-manager/src/account-monitor/components/discord"
 	"github.com/stake-plus/account-manager/src/account-monitor/components/networks"
+	types "github.com/stake-plus/account-manager/src/account-monitor/components/types"
 )
 
 type Monitor struct {
@@ -121,23 +123,35 @@ func (m *Monitor) checkBalances(ctx context.Context) {
 			}
 
 			// Get current balance from database
-			var currentBalance database.Balance
+			var freeStr, totalStr sql.NullString
 			err = m.db.QueryRow(`
-				SELECT COALESCE(free, 0), COALESCE(total, 0) FROM balances 
+				SELECT COALESCE(free, '0'), COALESCE(total, '0') FROM balances 
 				WHERE account_id = ? AND network_id = ? AND network_token_id = 
 				(SELECT id FROM network_tokens WHERE network_id = ? AND token_type = 'native' LIMIT 1)
-			`, account.ID, network.ID, network.ID).Scan(&currentBalance.Free, &currentBalance.Total)
+			`, account.ID, network.ID, network.ID).Scan(&freeStr, &totalStr)
 
-			// Initialize if nil
-			if currentBalance.Free == nil {
-				currentBalance.Free = big.NewInt(0)
+			// Initialize current balance
+			currentBalance := types.Balance{
+				Free:  big.NewInt(0),
+				Total: big.NewInt(0),
 			}
-			if currentBalance.Total == nil {
-				currentBalance.Total = big.NewInt(0)
+
+			// Parse balance strings if they exist
+			if freeStr.Valid && freeStr.String != "" {
+				currentBalance.Free, _ = new(big.Int).SetString(freeStr.String, 10)
+				if currentBalance.Free == nil {
+					currentBalance.Free = big.NewInt(0)
+				}
+			}
+			if totalStr.Valid && totalStr.String != "" {
+				currentBalance.Total, _ = new(big.Int).SetString(totalStr.String, 10)
+				if currentBalance.Total == nil {
+					currentBalance.Total = big.NewInt(0)
+				}
 			}
 
 			// Check for balance changes
-			if err == nil {
+			if err == nil || err == sql.ErrNoRows {
 				change := new(big.Int).Sub(balance.Total, currentBalance.Total)
 				if change.Cmp(big.NewInt(0)) != 0 {
 					changeType := "increase"
@@ -163,7 +177,7 @@ func (m *Monitor) checkBalances(ctx context.Context) {
 					}
 
 					// Record the change
-					m.db.RecordBalanceChange(database.BalanceChange{
+					m.db.RecordBalanceChange(types.BalanceChange{
 						AccountID:    account.ID,
 						NetworkID:    network.ID,
 						TotalBefore:  currentBalance.Total,

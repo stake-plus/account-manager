@@ -137,7 +137,7 @@ CREATE TABLE balances (
 -- Balance history for tracking changes
 CREATE TABLE balance_history (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    balance_id BIGINT UNSIGNED NOT NULL,
+    balance_id BIGINT UNSIGNED,
     account_id INT UNSIGNED NOT NULL,
     network_id INT UNSIGNED NOT NULL,
     network_token_id INT UNSIGNED NOT NULL,
@@ -152,7 +152,6 @@ CREATE TABLE balance_history (
     tx_hash VARCHAR(128),
     block_number BIGINT UNSIGNED,
     recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (balance_id) REFERENCES balances(id) ON DELETE CASCADE,
     FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
     FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE CASCADE,
     FOREIGN KEY (network_token_id) REFERENCES network_tokens(id) ON DELETE CASCADE,
@@ -286,3 +285,9 @@ INSERT INTO settings (name, value, description) VALUES
 ('bounty_check_interval_minutes', '30', 'Minutes between bounty checks'),
 ('min_balance_change_notification', '0.0001', 'Minimum balance change to trigger notification'),
 ('enable_notifications', 'true', 'Enable Discord notifications');
+
+-- Sample data for testing (commented out by default)
+-- INSERT INTO networks (name, display_name, network_type, rpc_url, ws_url, decimals, symbol, ss58_prefix) VALUES
+-- ('polkadot', 'Polkadot', 'substrate', 'https://rpc.polkadot.io', 'wss://rpc.polkadot.io', 10, 'DOT', 0),
+-- ('kusama', 'Kusama', 'substrate', 'https://kusama-rpc.polkadot.io', 'wss://kusama-rpc.polkadot.io', 12, 'KSM', 2),
+-- ('moonbeam', 'Moonbeam', 'substrate-evm', 'https://rpc.api.moonbeam.network', 'wss://wss.api.moonbeam.network', 18, 'GLMR', 1284);

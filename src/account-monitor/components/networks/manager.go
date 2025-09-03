@@ -11,6 +11,7 @@ import (
 	gsrpc "github.com/centrifuge/go-substrate-rpc-client/v4"
 	gstypes "github.com/centrifuge/go-substrate-rpc-client/v4/types"
 	"github.com/centrifuge/go-substrate-rpc-client/v4/types/codec"
+	"github.com/mr-tron/base58"
 
 	"github.com/stake-plus/account-manager/src/account-monitor/components/config"
 	"github.com/stake-plus/account-manager/src/account-monitor/components/database"
@@ -152,6 +153,41 @@ func (m *Manager) discoverAssets(api *gsrpc.SubstrateAPI, networkID uint) {
 	// and iterating through all asset IDs
 }
 
+// decodeSS58Address decodes an SS58 address to AccountID
+func decodeSS58Address(address string) (gstypes.AccountID, error) {
+	// Decode base58
+	decoded, err := base58.Decode(address)
+	if err != nil {
+		return gstypes.AccountID{}, fmt.Errorf("base58 decode failed: %w", err)
+	}
+
+	// SS58 addresses have the following structure:
+	// [prefix][publicKey][checksum]
+	// For addresses with prefix < 64: 1 byte prefix + 32 bytes pubkey + 2 bytes checksum = 35 bytes
+	// For addresses with prefix >= 64: 2 byte prefix + 32 bytes pubkey + 2 bytes checksum = 36 bytes
+
+	var pubkeyStart int
+	if len(decoded) == 35 {
+		// Single byte prefix
+		pubkeyStart = 1
+	} else if len(decoded) == 36 {
+		// Two byte prefix
+		pubkeyStart = 2
+	} else {
+		return gstypes.AccountID{}, fmt.Errorf("invalid address length: %d", len(decoded))
+	}
+
+	// Extract the public key (32 bytes)
+	if len(decoded) < pubkeyStart+32 {
+		return gstypes.AccountID{}, fmt.Errorf("address too short for public key")
+	}
+
+	var accountID gstypes.AccountID
+	copy(accountID[:], decoded[pubkeyStart:pubkeyStart+32])
+
+	return accountID, nil
+}
+
 func (m *Manager) GetBalance(networkName, addressStr string) (types.Balance, error) {
 	api, err := m.getClient(networkName)
 	if err != nil {
@@ -176,23 +212,19 @@ func (m *Manager) GetBalance(networkName, addressStr string) (types.Balance, err
 		if err != nil {
 			return types.Balance{}, fmt.Errorf("failed to decode hex address: %w", err)
 		}
-	} else {
-		// Try as hex without 0x prefix
+	} else if len(addressStr) == 64 {
+		// It might be hex without 0x prefix (64 chars = 32 bytes)
 		accountIDPtr, err := gstypes.NewAccountIDFromHexString(addressStr)
 		if err != nil {
-			// If not hex, it might be SS58 - for now we'll skip these
-			// In production you'd want to add proper SS58 decoding
-			log.Printf("Skipping non-hex address format for now: %s", addressStr)
-			return types.Balance{
-				Free:       big.NewInt(0),
-				Reserved:   big.NewInt(0),
-				MiscFrozen: big.NewInt(0),
-				FeeFrozen:  big.NewInt(0),
-				Bonded:     big.NewInt(0),
-				Total:      big.NewInt(0),
-			}, nil
+			return types.Balance{}, fmt.Errorf("failed to decode hex string: %w", err)
 		}
 		accountID = *accountIDPtr
+	} else {
+		// Try SS58 decode
+		accountID, err = decodeSS58Address(addressStr)
+		if err != nil {
+			return types.Balance{}, fmt.Errorf("failed to decode SS58 address %s: %w", addressStr, err)
+		}
 	}
 
 	// Get account info

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -50,6 +51,22 @@ func main() {
 	var discordClient *discord.Client
 	if cfg.EnableNotifications {
 		if cfg.UseDiscordBot {
+			// Check if bot has proper permissions
+			if cfg.DiscordToken != "" {
+				// Extract bot ID from token (first part before first dot)
+				botID := cfg.DiscordToken
+				if dotIndex := len(cfg.DiscordToken); dotIndex > 18 {
+					botID = cfg.DiscordToken[:18]
+				}
+
+				// Generate invite URL with proper permissions
+				permissions := "2147485696" // Send Messages, Read Messages, Embed Links
+				inviteURL := fmt.Sprintf("https://discord.com/api/oauth2/authorize?client_id=%s&permissions=%s&scope=bot",
+					botID, permissions)
+
+				log.Printf("Make sure the bot is invited with proper permissions: %s", inviteURL)
+			}
+
 			discordClient, err = discord.NewBotClient(cfg.DiscordToken, cfg.AlertsChannelID, cfg.SummaryChannelID)
 			if err != nil {
 				log.Printf("Failed to initialize Discord bot client: %v", err)
@@ -61,6 +78,10 @@ func main() {
 					log.Println("Discord notifications disabled due to initialization failure")
 					cfg.EnableNotifications = false
 				}
+			} else {
+				log.Printf("Discord bot connected successfully")
+				log.Printf("Alerts will be sent to channel: %s", cfg.AlertsChannelID)
+				log.Printf("Summaries will be sent to channel: %s", cfg.SummaryChannelID)
 			}
 		} else if cfg.DiscordWebhook != "" {
 			discordClient = discord.NewWebhookClient(cfg.DiscordWebhook, cfg.DiscordChannelID)

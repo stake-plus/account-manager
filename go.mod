@@ -8,6 +8,7 @@ require (
 	github.com/bwmarrin/discordgo v0.29.0
 	github.com/centrifuge/go-substrate-rpc-client/v4 v4.2.1
 	github.com/go-sql-driver/mysql v1.9.3
+	github.com/mr-tron/base58 v1.2.0
 )
 
 require (

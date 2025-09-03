@@ -42,25 +42,17 @@ func Load() (*Config, error) {
 		UseDiscordBot:                false,
 	}
 
-	// Determine Discord mode
-	if cfg.DiscordToken != "" && cfg.GuildID != "" {
-		cfg.UseDiscordBot = true
-	} else if cfg.DiscordWebhook == "" {
-		// If no webhook and no bot token, notifications disabled
-		cfg.EnableNotifications = false
-	}
-
-	// Try to load settings from database if connection is available
+	// Try to load settings from database first
 	if db, err := database.Initialize(cfg.MySQLDSN); err == nil {
 		defer db.Close()
 
-		settings, _ := database.LoadSettings(db)
-		if settings != nil {
+		settings, err := database.LoadSettings(db)
+		if err == nil && settings != nil {
 			applyDatabaseSettings(cfg, settings)
 		}
 	}
 
-	// Parse interval settings
+	// Parse interval settings from environment
 	if intervalStr := os.Getenv("CHECK_INTERVAL_HOURS"); intervalStr != "" {
 		if val, err := strconv.Atoi(intervalStr); err == nil {
 			cfg.CheckIntervalHours = val
@@ -89,50 +81,58 @@ func Load() (*Config, error) {
 		}
 	}
 
+	// Determine Discord mode after loading all settings
+	if cfg.DiscordToken != "" && cfg.GuildID != "" {
+		cfg.UseDiscordBot = true
+	} else if cfg.DiscordWebhook == "" && cfg.DiscordToken == "" {
+		// If no webhook and no bot token, notifications disabled
+		cfg.EnableNotifications = false
+	}
+
 	return cfg, nil
 }
 
 func applyDatabaseSettings(cfg *Config, settings map[string]string) {
-	if token, ok := settings["discord_token"]; ok && cfg.DiscordToken == "" {
+	if token, ok := settings["discord_token"]; ok && token != "" && cfg.DiscordToken == "" {
 		cfg.DiscordToken = token
 	}
-	if webhook, ok := settings["discord_webhook"]; ok && cfg.DiscordWebhook == "" {
+	if webhook, ok := settings["discord_webhook"]; ok && webhook != "" && cfg.DiscordWebhook == "" {
 		cfg.DiscordWebhook = webhook
 	}
-	if channelID, ok := settings["discord_channel_id"]; ok && cfg.DiscordChannelID == "" {
+	if channelID, ok := settings["discord_channel_id"]; ok && channelID != "" && cfg.DiscordChannelID == "" {
 		cfg.DiscordChannelID = channelID
 	}
-	if guildID, ok := settings["guild_id"]; ok && cfg.GuildID == "" {
+	if guildID, ok := settings["guild_id"]; ok && guildID != "" && cfg.GuildID == "" {
 		cfg.GuildID = guildID
 	}
-	if alertsID, ok := settings["alerts_channel_id"]; ok && cfg.AlertsChannelID == "" {
+	if alertsID, ok := settings["alerts_channel_id"]; ok && alertsID != "" && cfg.AlertsChannelID == "" {
 		cfg.AlertsChannelID = alertsID
 	}
-	if summaryID, ok := settings["summary_channel_id"]; ok && cfg.SummaryChannelID == "" {
+	if summaryID, ok := settings["summary_channel_id"]; ok && summaryID != "" && cfg.SummaryChannelID == "" {
 		cfg.SummaryChannelID = summaryID
 	}
-	if roleID, ok := settings["monitor_role_id"]; ok && cfg.MonitorRoleID == "" {
+	if roleID, ok := settings["monitor_role_id"]; ok && roleID != "" && cfg.MonitorRoleID == "" {
 		cfg.MonitorRoleID = roleID
 	}
-	if interval, ok := settings["check_interval_hours"]; ok {
+	if interval, ok := settings["check_interval_hours"]; ok && interval != "" {
 		if val, err := strconv.Atoi(interval); err == nil {
 			cfg.CheckIntervalHours = val
 		}
 	}
-	if interval, ok := settings["validator_check_interval_hours"]; ok {
+	if interval, ok := settings["validator_check_interval_hours"]; ok && interval != "" {
 		if val, err := strconv.Atoi(interval); err == nil {
 			cfg.ValidatorCheckIntervalHours = val
 		}
 	}
-	if interval, ok := settings["bounty_check_interval_minutes"]; ok {
+	if interval, ok := settings["bounty_check_interval_minutes"]; ok && interval != "" {
 		if val, err := strconv.Atoi(interval); err == nil {
 			cfg.BountyCheckIntervalMinutes = val
 		}
 	}
-	if enabled, ok := settings["enable_notifications"]; ok {
+	if enabled, ok := settings["enable_notifications"]; ok && enabled != "" {
 		cfg.EnableNotifications = enabled == "true" || enabled == "1"
 	}
-	if minChange, ok := settings["min_balance_change_notification"]; ok {
+	if minChange, ok := settings["min_balance_change_notification"]; ok && minChange != "" {
 		if val, err := strconv.ParseFloat(minChange, 64); err == nil {
 			cfg.MinBalanceChangeNotification = val
 		}

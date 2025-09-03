@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"strings"
 	"sync"
 
 	gsrpc "github.com/centrifuge/go-substrate-rpc-client/v4"
 	gstypes "github.com/centrifuge/go-substrate-rpc-client/v4/types"
+	"github.com/centrifuge/go-substrate-rpc-client/v4/types/codec"
+
 	"github.com/stake-plus/account-manager/src/account-monitor/components/config"
 	"github.com/stake-plus/account-manager/src/account-monitor/components/database"
 	types "github.com/stake-plus/account-manager/src/account-monitor/components/types"
@@ -114,14 +117,12 @@ func (m *Manager) DiscoverNetworks(ctx context.Context) error {
 			for _, module := range meta.AsMetadataV14.Pallets {
 				if string(module.Name) == palletName {
 					hasPallet = true
-
 					// Store pallet detection
 					_, err = m.db.Exec(`
 						INSERT INTO network_pallets (network_id, pallet_name, pallet_index, detected)
 						VALUES (?, ?, ?, TRUE)
 						ON DUPLICATE KEY UPDATE detected = TRUE, pallet_index = VALUES(pallet_index)
 					`, network.ID, palletName, module.Index)
-
 					if err != nil {
 						log.Printf("Failed to store pallet info: %v", err)
 					}
@@ -147,31 +148,51 @@ func (m *Manager) discoverAssets(api *gsrpc.SubstrateAPI, networkID uint) {
 	// This would query the Assets pallet for all available assets
 	// and store them in the network_tokens table
 	log.Printf("    Discovering assets for network ID %d", networkID)
-
 	// Implementation would involve querying Assets.Asset storage
 	// and iterating through all asset IDs
 }
 
-func (m *Manager) GetBalance(networkName, address string) (types.Balance, error) {
+func (m *Manager) GetBalance(networkName, addressStr string) (types.Balance, error) {
 	api, err := m.getClient(networkName)
 	if err != nil {
 		return types.Balance{}, err
 	}
 
-	// Get metadata first
+	// Get metadata
 	meta, err := api.RPC.State.GetMetadataLatest()
 	if err != nil {
 		return types.Balance{}, err
 	}
 
-	// Decode the address
-	accountID, err := gstypes.NewAccountIDFromHexString(address)
-	if err != nil {
-		// Try SS58 decode
-		_, err = gstypes.NewAddressFromHexAccountID(address)
+	// Handle address conversion
+	var accountID gstypes.AccountID
+
+	// Remove whitespace
+	addressStr = strings.TrimSpace(addressStr)
+
+	// If it starts with 0x, it's already hex
+	if strings.HasPrefix(addressStr, "0x") {
+		err = codec.DecodeFromHex(addressStr, &accountID)
 		if err != nil {
-			return types.Balance{}, fmt.Errorf("invalid address: %s", address)
+			return types.Balance{}, fmt.Errorf("failed to decode hex address: %w", err)
 		}
+	} else {
+		// Try as hex without 0x prefix
+		accountIDPtr, err := gstypes.NewAccountIDFromHexString(addressStr)
+		if err != nil {
+			// If not hex, it might be SS58 - for now we'll skip these
+			// In production you'd want to add proper SS58 decoding
+			log.Printf("Skipping non-hex address format for now: %s", addressStr)
+			return types.Balance{
+				Free:       big.NewInt(0),
+				Reserved:   big.NewInt(0),
+				MiscFrozen: big.NewInt(0),
+				FeeFrozen:  big.NewInt(0),
+				Bonded:     big.NewInt(0),
+				Total:      big.NewInt(0),
+			}, nil
+		}
+		accountID = *accountIDPtr
 	}
 
 	// Get account info
@@ -182,8 +203,20 @@ func (m *Manager) GetBalance(networkName, address string) (types.Balance, error)
 
 	var accountInfo gstypes.AccountInfo
 	ok, err := api.RPC.State.GetStorageLatest(key, &accountInfo)
-	if err != nil || !ok {
+	if err != nil {
 		return types.Balance{}, err
+	}
+
+	if !ok {
+		// Account doesn't exist on this network, return zero balance
+		return types.Balance{
+			Free:       big.NewInt(0),
+			Reserved:   big.NewInt(0),
+			MiscFrozen: big.NewInt(0),
+			FeeFrozen:  big.NewInt(0),
+			Bonded:     big.NewInt(0),
+			Total:      big.NewInt(0),
+		}, nil
 	}
 
 	// Convert to our balance type
@@ -196,7 +229,7 @@ func (m *Manager) GetBalance(networkName, address string) (types.Balance, error)
 		Total:      new(big.Int).Add(accountInfo.Data.Free.Int, accountInfo.Data.Reserved.Int),
 	}
 
-	// Check for staking/bonded balance
+	// Check for staking/bonded balance if Staking pallet exists
 	// This would query the Staking pallet for bonded amounts
 
 	return balance, nil

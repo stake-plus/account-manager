@@ -190,18 +190,23 @@ func (c *Client) SendDailySummary(summary DailySummary) error {
 		return nil
 	}
 
-	// Format total portfolio value and revenue
-	totalValueStr := formatBalance(summary.TotalPortfolioValue, "")
-	totalRevenueStr := formatBalance(summary.TotalDailyRevenue, "")
-
-	// Determine color based on revenue
+	// Determine color based on overall change
 	color := 0x0099ff // Blue default
-	if summary.TotalDailyRevenue != nil {
-		if summary.TotalDailyRevenue.Cmp(big.NewInt(0)) > 0 {
-			color = 0x00ff00 // Green for profit
-		} else if summary.TotalDailyRevenue.Cmp(big.NewInt(0)) < 0 {
-			color = 0xff0000 // Red for loss
+	hasProfit := false
+	hasLoss := false
+
+	for _, tokenTotal := range summary.TotalsByToken {
+		if tokenTotal.Change.Cmp(big.NewInt(0)) > 0 {
+			hasProfit = true
+		} else if tokenTotal.Change.Cmp(big.NewInt(0)) < 0 {
+			hasLoss = true
 		}
+	}
+
+	if hasProfit && !hasLoss {
+		color = 0x00ff00 // Green for profit
+	} else if hasLoss && !hasProfit {
+		color = 0xff0000 // Red for loss
 	}
 
 	embed := Embed{
@@ -210,18 +215,13 @@ func (c *Client) SendDailySummary(summary DailySummary) error {
 		Color:       color,
 		Fields: []EmbedField{
 			{
-				Name:   "📈 Total Portfolio Value",
-				Value:  totalValueStr,
-				Inline: true,
-			},
-			{
-				Name:   "💰 Daily Revenue",
-				Value:  totalRevenueStr,
-				Inline: true,
-			},
-			{
 				Name:   "🔍 Active Accounts",
 				Value:  fmt.Sprintf("%d", summary.TotalAccounts),
+				Inline: true,
+			},
+			{
+				Name:   "🌐 Active Networks",
+				Value:  fmt.Sprintf("%d", summary.ActiveNetworks),
 				Inline: true,
 			},
 		},
@@ -229,6 +229,25 @@ func (c *Client) SendDailySummary(summary DailySummary) error {
 		Footer: &EmbedFooter{
 			Text: "Account Monitor - Daily Summary",
 		},
+	}
+
+	// Add portfolio totals by token
+	if len(summary.TotalsByToken) > 0 {
+		embed.Fields = append(embed.Fields, EmbedField{
+			Name:   "────────────────────",
+			Value:  "**Portfolio Totals by Token**",
+			Inline: false,
+		})
+
+		for symbol, tokenTotal := range summary.TotalsByToken {
+			embed.Fields = append(embed.Fields, EmbedField{
+				Name: fmt.Sprintf("💰 %s", symbol),
+				Value: fmt.Sprintf("Total: %s\nChange: %s",
+					formatTokenAmount(tokenTotal.Total, tokenTotal.Decimals, symbol),
+					formatTokenAmount(tokenTotal.Change, tokenTotal.Decimals, symbol)),
+				Inline: true,
+			})
+		}
 	}
 
 	// Add account details
@@ -279,13 +298,6 @@ func (c *Client) SendDailySummary(summary DailySummary) error {
 			Inline: false,
 		})
 	}
-
-	// Add summary footer
-	embed.Fields = append(embed.Fields, EmbedField{
-		Name:   "────────────────────",
-		Value:  fmt.Sprintf("**Total Portfolio: %s | Daily Change: %s**", totalValueStr, totalRevenueStr),
-		Inline: false,
-	})
 
 	return c.sendEmbed(embed, false)
 }
@@ -470,6 +482,24 @@ func formatBalance(amount *big.Int, token string) string {
 	return formatted
 }
 
+func formatTokenAmount(amount *big.Int, decimals uint8, symbol string) string {
+	if amount == nil {
+		return "0 " + symbol
+	}
+
+	// Convert to float for formatting
+	fAmount := new(big.Float).SetInt(amount)
+	divisor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil))
+	result := new(big.Float).Quo(fAmount, divisor)
+
+	// Format with sign for changes
+	val, _ := result.Float64()
+	if val >= 0 {
+		return fmt.Sprintf("+%.4f %s", val, symbol)
+	}
+	return fmt.Sprintf("%.4f %s", val, symbol)
+}
+
 func formatAddress(address string) string {
 	if len(address) <= 16 {
 		return address
@@ -477,17 +507,23 @@ func formatAddress(address string) string {
 	return fmt.Sprintf("%s...%s", address[:6], address[len(address)-6:])
 }
 
+type TokenTotal struct {
+	Symbol   string
+	Total    *big.Int
+	Change   *big.Int
+	Decimals uint8
+}
+
 type DailySummary struct {
-	TotalAccounts       int
-	ActiveNetworks      int
-	TotalChanges        int
-	TotalPortfolioValue *big.Int
-	TotalDailyRevenue   *big.Int
-	ChildBountyRevenue  *big.Int
-	ValidatorRevenue    *big.Int
-	CollatorRevenue     *big.Int
-	StakingRevenue      *big.Int
-	AccountSummaries    []AccountSummary
+	TotalAccounts      int
+	ActiveNetworks     int
+	TotalChanges       int
+	TotalsByToken      map[string]*TokenTotal
+	ChildBountyRevenue *big.Int
+	ValidatorRevenue   *big.Int
+	CollatorRevenue    *big.Int
+	StakingRevenue     *big.Int
+	AccountSummaries   []AccountSummary
 }
 
 type AccountSummary struct {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/stake-plus/account-manager/src/account-monitor/components/config"
@@ -21,12 +22,18 @@ type Monitor struct {
 	config   *config.Config
 }
 
+type TokenBalance struct {
+	Balance  *big.Int
+	Symbol   string
+	Decimals uint8
+	Change   *big.Int
+}
+
 type AccountBalance struct {
-	Account       types.Account
-	Balances      map[string]*types.Balance // network -> balance
-	TotalValue    *big.Int                  // Total value across all networks
-	ChangeValue   *big.Int                  // Change from yesterday
-	ChangePercent float64                   // Percentage change
+	Account        types.Account
+	TokenBalances  map[string]*TokenBalance // "network:symbol" -> balance
+	TotalsByToken  map[string]*big.Int      // symbol -> total across networks
+	ChangesByToken map[string]*big.Int      // symbol -> change across networks
 }
 
 func New(db *database.DB, networks *networks.Manager, discord *discord.Client, config *config.Config) *Monitor {
@@ -72,8 +79,10 @@ func (m *Monitor) checkBalances(ctx context.Context) {
 
 	// Track all balances for daily summary
 	accountBalances := make(map[uint]*AccountBalance)
-	totalPortfolioValue := big.NewInt(0)
-	totalDailyRevenue := big.NewInt(0)
+
+	// Track portfolio totals by token
+	portfolioTotalsByToken := make(map[string]*big.Int)  // symbol -> total value
+	portfolioChangesByToken := make(map[string]*big.Int) // symbol -> total change
 
 	for _, account := range accounts {
 		if !account.MonitorEnabled {
@@ -81,10 +90,10 @@ func (m *Monitor) checkBalances(ctx context.Context) {
 		}
 
 		accountBalance := &AccountBalance{
-			Account:     account,
-			Balances:    make(map[string]*types.Balance),
-			TotalValue:  big.NewInt(0),
-			ChangeValue: big.NewInt(0),
+			Account:        account,
+			TokenBalances:  make(map[string]*TokenBalance),
+			TotalsByToken:  make(map[string]*big.Int),
+			ChangesByToken: make(map[string]*big.Int),
 		}
 
 		for _, network := range networks {
@@ -98,12 +107,6 @@ func (m *Monitor) checkBalances(ctx context.Context) {
 				log.Printf("Failed to get balance for %s on %s: %v", account.Address, network.Name, err)
 				continue
 			}
-
-			// Store in account balances
-			accountBalance.Balances[network.Name] = &balance
-
-			// Add to total value
-			accountBalance.TotalValue.Add(accountBalance.TotalValue, balance.Total)
 
 			// Get native token for this network
 			var nativeToken types.NetworkToken
@@ -135,8 +138,30 @@ func (m *Monitor) checkBalances(ctx context.Context) {
 			// Calculate change
 			change := new(big.Int).Sub(balance.Total, previousBalance.Total)
 
-			// Track change for this account
-			accountBalance.ChangeValue.Add(accountBalance.ChangeValue, change)
+			// Store token balance info
+			key := fmt.Sprintf("%s:%s", network.Name, nativeToken.Symbol)
+			accountBalance.TokenBalances[key] = &TokenBalance{
+				Balance:  balance.Total,
+				Symbol:   nativeToken.Symbol,
+				Decimals: nativeToken.Decimals,
+				Change:   change,
+			}
+
+			// Update totals by token
+			if accountBalance.TotalsByToken[nativeToken.Symbol] == nil {
+				accountBalance.TotalsByToken[nativeToken.Symbol] = big.NewInt(0)
+				accountBalance.ChangesByToken[nativeToken.Symbol] = big.NewInt(0)
+			}
+			accountBalance.TotalsByToken[nativeToken.Symbol].Add(accountBalance.TotalsByToken[nativeToken.Symbol], balance.Total)
+			accountBalance.ChangesByToken[nativeToken.Symbol].Add(accountBalance.ChangesByToken[nativeToken.Symbol], change)
+
+			// Update portfolio totals
+			if portfolioTotalsByToken[nativeToken.Symbol] == nil {
+				portfolioTotalsByToken[nativeToken.Symbol] = big.NewInt(0)
+				portfolioChangesByToken[nativeToken.Symbol] = big.NewInt(0)
+			}
+			portfolioTotalsByToken[nativeToken.Symbol].Add(portfolioTotalsByToken[nativeToken.Symbol], balance.Total)
+			portfolioChangesByToken[nativeToken.Symbol].Add(portfolioChangesByToken[nativeToken.Symbol], change)
 
 			// Update or insert balance
 			if balanceExists {
@@ -217,78 +242,134 @@ func (m *Monitor) checkBalances(ctx context.Context) {
 			}
 		}
 
-		// Calculate percentage change
-		if accountBalance.TotalValue.Cmp(big.NewInt(0)) > 0 && accountBalance.ChangeValue.Cmp(big.NewInt(0)) != 0 {
-			previousValue := new(big.Int).Sub(accountBalance.TotalValue, accountBalance.ChangeValue)
-			if previousValue.Cmp(big.NewInt(0)) > 0 {
-				changeFloat := new(big.Float).SetInt(accountBalance.ChangeValue)
-				prevFloat := new(big.Float).SetInt(previousValue)
-				percentFloat := new(big.Float).Quo(changeFloat, prevFloat)
-				percentFloat.Mul(percentFloat, big.NewFloat(100))
-				accountBalance.ChangePercent, _ = percentFloat.Float64()
-			}
-		}
-
 		accountBalances[account.ID] = accountBalance
-		totalPortfolioValue.Add(totalPortfolioValue, accountBalance.TotalValue)
-		totalDailyRevenue.Add(totalDailyRevenue, accountBalance.ChangeValue)
 	}
 
 	// Generate and send daily summary
-	m.sendDailySummary(accountBalances, totalPortfolioValue, totalDailyRevenue)
+	m.sendDailySummary(accountBalances, portfolioTotalsByToken, portfolioChangesByToken)
 
 	log.Println("Balance check completed")
 }
 
-func (m *Monitor) sendDailySummary(accountBalances map[uint]*AccountBalance, totalValue, totalRevenue *big.Int) {
+func (m *Monitor) sendDailySummary(accountBalances map[uint]*AccountBalance,
+	portfolioTotalsByToken map[string]*big.Int,
+	portfolioChangesByToken map[string]*big.Int) {
+
 	if m.discord == nil {
 		return
 	}
 
 	summary := discord.DailySummary{
-		TotalAccounts:  len(accountBalances),
-		ActiveNetworks: 0, // Will be calculated
+		TotalAccounts:    len(accountBalances),
+		ActiveNetworks:   0,
+		TotalsByToken:    make(map[string]*discord.TokenTotal),
+		AccountSummaries: []discord.AccountSummary{},
 	}
 
 	// Calculate active networks
 	networksUsed := make(map[string]bool)
 	for _, ab := range accountBalances {
-		for network := range ab.Balances {
+		for key := range ab.TokenBalances {
+			network := key[:strings.Index(key, ":")]
 			networksUsed[network] = true
 		}
 	}
 	summary.ActiveNetworks = len(networksUsed)
 
+	// Get token decimals map
+	tokenDecimals := make(map[string]uint8)
+	rows, _ := m.db.Query(`
+		SELECT DISTINCT symbol, decimals 
+		FROM network_tokens 
+		WHERE token_type = 'native'
+	`)
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var symbol string
+			var decimals uint8
+			if err := rows.Scan(&symbol, &decimals); err == nil {
+				tokenDecimals[symbol] = decimals
+			}
+		}
+	}
+
+	// Build token totals
+	for symbol, total := range portfolioTotalsByToken {
+		change := portfolioChangesByToken[symbol]
+		if change == nil {
+			change = big.NewInt(0)
+		}
+
+		decimals := tokenDecimals[symbol]
+		if decimals == 0 {
+			decimals = 10 // default
+		}
+
+		summary.TotalsByToken[symbol] = &discord.TokenTotal{
+			Symbol:   symbol,
+			Total:    total,
+			Change:   change,
+			Decimals: decimals,
+		}
+	}
+
 	// Build account summaries
 	for _, ab := range accountBalances {
-		// Format values for display (assuming 10 decimals for now)
-		divisor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(10), nil))
+		var summaryLines []string
 
-		currentFloat := new(big.Float).SetInt(ab.TotalValue)
-		currentFloat.Quo(currentFloat, divisor)
-		currentValue, _ := currentFloat.Float64()
+		// Show balances by token
+		for symbol, total := range ab.TotalsByToken {
+			if total.Cmp(big.NewInt(0)) == 0 {
+				continue
+			}
 
-		changeFloat := new(big.Float).SetInt(ab.ChangeValue)
-		changeFloat.Quo(changeFloat, divisor)
-		changeValue, _ := changeFloat.Float64()
+			change := ab.ChangesByToken[symbol]
+			if change == nil {
+				change = big.NewInt(0)
+			}
 
-		// Build summary string
-		summaryText := fmt.Sprintf("**Value:** %.4f | **Change:** %+.4f (%.2f%%)",
-			currentValue, changeValue, ab.ChangePercent)
+			decimals := tokenDecimals[symbol]
+			if decimals == 0 {
+				decimals = 10
+			}
 
-		// Add network breakdown if significant
-		if len(ab.Balances) > 1 {
-			summaryText += "\n    Networks: "
-			networkList := ""
-			for network, balance := range ab.Balances {
-				if balance.Total.Cmp(big.NewInt(0)) > 0 {
-					if networkList != "" {
-						networkList += ", "
-					}
-					networkList += network
+			divisor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil))
+
+			totalFloat := new(big.Float).SetInt(total)
+			totalFloat.Quo(totalFloat, divisor)
+			totalValue, _ := totalFloat.Float64()
+
+			changeFloat := new(big.Float).SetInt(change)
+			changeFloat.Quo(changeFloat, divisor)
+			changeValue, _ := changeFloat.Float64()
+
+			changePercent := 0.0
+			if totalValue > 0 && changeValue != 0 {
+				previousValue := totalValue - changeValue
+				if previousValue > 0 {
+					changePercent = (changeValue / previousValue) * 100
 				}
 			}
-			summaryText += networkList
+
+			summaryLines = append(summaryLines,
+				fmt.Sprintf("**%s:** %.4f | Change: %+.4f (%.2f%%)",
+					symbol, totalValue, changeValue, changePercent))
+		}
+
+		// Add network breakdown
+		networkList := ""
+		for key := range ab.TokenBalances {
+			if ab.TokenBalances[key].Balance.Cmp(big.NewInt(0)) > 0 {
+				parts := strings.Split(key, ":")
+				if networkList != "" {
+					networkList += ", "
+				}
+				networkList += parts[0]
+			}
+		}
+		if networkList != "" {
+			summaryLines = append(summaryLines, fmt.Sprintf("Networks: %s", networkList))
 		}
 
 		accountName := ab.Account.Name.String
@@ -300,13 +381,9 @@ func (m *Monitor) sendDailySummary(accountBalances map[uint]*AccountBalance, tot
 		summary.AccountSummaries = append(summary.AccountSummaries, discord.AccountSummary{
 			Name:    accountName,
 			Address: ab.Account.Address,
-			Summary: summaryText,
+			Summary: strings.Join(summaryLines, "\n"),
 		})
 	}
-
-	// Set revenue values
-	summary.TotalPortfolioValue = totalValue
-	summary.TotalDailyRevenue = totalRevenue
 
 	// These will be filled by validator/collator/bounty checks
 	summary.ChildBountyRevenue = big.NewInt(0)

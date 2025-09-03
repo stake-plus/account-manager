@@ -1,0 +1,15 @@
+# Binaries
+bin/
+*.exe
+
+# Config
+.env
+config.yaml
+
+# IDE
+.vscode/
+.idea/
+
+# Temp
+*.tmp
+*.log

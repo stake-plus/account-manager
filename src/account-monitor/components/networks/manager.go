@@ -9,8 +9,8 @@ import (
 
 	gsrpc "github.com/centrifuge/go-substrate-rpc-client/v4"
 	"github.com/centrifuge/go-substrate-rpc-client/v4/types"
-	"github.com/stake-plus/account-monitor/components/config"
-	"github.com/stake-plus/account-monitor/components/database"
+	"github.com/stake-plus/account-manager/src/account-monitor/components/config"
+	"github.com/stake-plus/account-manager/src/account-monitor/components/database"
 )
 
 type Manager struct {

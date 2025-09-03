@@ -1,15 +1,37 @@
-# Binaries
-bin/
+# Ignore common binaries
 *.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.ps1
+*.txt
 
-# Config
-.env
-config.yaml
 
-# IDE
-.vscode/
-.idea/
+# Ignore go working files
+go.work
+go.work.sum
+go.sum
 
-# Temp
-*.tmp
-*.log
+# Ignore config directory but keep structure
+/config/*
+
+# Ignore tmp directory but keep structure
+/tmp/*
+
+# Ignore bin directory but keep structure
+/bin/*
+
+# Ignore files in maxmind directory but keep structure
+/tmp/maxmind/*
+
+/src/GCUI/node_modules/*
+/src/GCUI/node_modules
+/src/GCUI/dist
+
+package-lock.json
+
+/public/*
+/public

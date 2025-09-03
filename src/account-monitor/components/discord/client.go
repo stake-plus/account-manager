@@ -84,6 +84,7 @@ func (c *Client) SendBalanceChangeNotification(account, network, token string, b
 
 	color := 0x00ff00 // Green for increase
 	emoji := "📈"
+
 	if changeType == "decrease" {
 		color = 0xff0000 // Red for decrease
 		emoji = "📉"
@@ -189,24 +190,38 @@ func (c *Client) SendDailySummary(summary DailySummary) error {
 		return nil
 	}
 
+	// Format total portfolio value and revenue
+	totalValueStr := formatBalance(summary.TotalPortfolioValue, "")
+	totalRevenueStr := formatBalance(summary.TotalDailyRevenue, "")
+
+	// Determine color based on revenue
+	color := 0x0099ff // Blue default
+	if summary.TotalDailyRevenue != nil {
+		if summary.TotalDailyRevenue.Cmp(big.NewInt(0)) > 0 {
+			color = 0x00ff00 // Green for profit
+		} else if summary.TotalDailyRevenue.Cmp(big.NewInt(0)) < 0 {
+			color = 0xff0000 // Red for loss
+		}
+	}
+
 	embed := Embed{
-		Title:       "📊 Daily Revenue Summary",
-		Description: fmt.Sprintf("Summary for %s", time.Now().Format("2006-01-02")),
-		Color:       0x0099ff,
+		Title:       "📊 Daily Portfolio Summary",
+		Description: fmt.Sprintf("Date: %s", time.Now().Format("2006-01-02")),
+		Color:       color,
 		Fields: []EmbedField{
 			{
-				Name:   "Total Accounts Monitored",
+				Name:   "📈 Total Portfolio Value",
+				Value:  totalValueStr,
+				Inline: true,
+			},
+			{
+				Name:   "💰 Daily Revenue",
+				Value:  totalRevenueStr,
+				Inline: true,
+			},
+			{
+				Name:   "🔍 Active Accounts",
 				Value:  fmt.Sprintf("%d", summary.TotalAccounts),
-				Inline: true,
-			},
-			{
-				Name:   "Active Networks",
-				Value:  fmt.Sprintf("%d", summary.ActiveNetworks),
-				Inline: true,
-			},
-			{
-				Name:   "Total Balance Changes",
-				Value:  fmt.Sprintf("%d", summary.TotalChanges),
 				Inline: true,
 			},
 		},
@@ -216,66 +231,59 @@ func (c *Client) SendDailySummary(summary DailySummary) error {
 		},
 	}
 
-	// Add revenue breakdown
-	if summary.ChildBountyRevenue != nil && summary.ChildBountyRevenue.Cmp(big.NewInt(0)) > 0 {
+	// Add account details
+	if len(summary.AccountSummaries) > 0 {
 		embed.Fields = append(embed.Fields, EmbedField{
-			Name:   "💰 Child Bounty Revenue",
-			Value:  formatBalance(summary.ChildBountyRevenue, ""),
+			Name:   "────────────────────",
+			Value:  "**Account Details**",
 			Inline: false,
 		})
+
+		for _, account := range summary.AccountSummaries {
+			embed.Fields = append(embed.Fields, EmbedField{
+				Name:   fmt.Sprintf("💼 %s", account.Name),
+				Value:  account.Summary,
+				Inline: false,
+			})
+		}
+	}
+
+	// Add revenue breakdown if any
+	hasRevenue := false
+	revenueBreakdown := "────────────────────\n**Revenue Breakdown**\n"
+
+	if summary.ChildBountyRevenue != nil && summary.ChildBountyRevenue.Cmp(big.NewInt(0)) > 0 {
+		revenueBreakdown += fmt.Sprintf("🎁 Child Bounties: %s\n", formatBalance(summary.ChildBountyRevenue, ""))
+		hasRevenue = true
 	}
 
 	if summary.ValidatorRevenue != nil && summary.ValidatorRevenue.Cmp(big.NewInt(0)) > 0 {
-		embed.Fields = append(embed.Fields, EmbedField{
-			Name:   "⚡ Validator Revenue",
-			Value:  formatBalance(summary.ValidatorRevenue, ""),
-			Inline: false,
-		})
+		revenueBreakdown += fmt.Sprintf("⚡ Validator Rewards: %s\n", formatBalance(summary.ValidatorRevenue, ""))
+		hasRevenue = true
 	}
 
 	if summary.CollatorRevenue != nil && summary.CollatorRevenue.Cmp(big.NewInt(0)) > 0 {
-		embed.Fields = append(embed.Fields, EmbedField{
-			Name:   "🔗 Collator Revenue",
-			Value:  formatBalance(summary.CollatorRevenue, ""),
-			Inline: false,
-		})
+		revenueBreakdown += fmt.Sprintf("🔗 Collator Rewards: %s\n", formatBalance(summary.CollatorRevenue, ""))
+		hasRevenue = true
 	}
 
 	if summary.StakingRevenue != nil && summary.StakingRevenue.Cmp(big.NewInt(0)) > 0 {
+		revenueBreakdown += fmt.Sprintf("📈 Staking Rewards: %s\n", formatBalance(summary.StakingRevenue, ""))
+		hasRevenue = true
+	}
+
+	if hasRevenue {
 		embed.Fields = append(embed.Fields, EmbedField{
-			Name:   "📈 Staking Revenue",
-			Value:  formatBalance(summary.StakingRevenue, ""),
+			Name:   "💵 Revenue Sources",
+			Value:  revenueBreakdown,
 			Inline: false,
 		})
 	}
 
-	// Add per-account summaries
-	for _, account := range summary.AccountSummaries {
-		embed.Fields = append(embed.Fields, EmbedField{
-			Name:   fmt.Sprintf("📍 %s", account.Name),
-			Value:  account.Summary,
-			Inline: false,
-		})
-	}
-
-	// Calculate total revenue
-	totalRevenue := big.NewInt(0)
-	if summary.ChildBountyRevenue != nil {
-		totalRevenue.Add(totalRevenue, summary.ChildBountyRevenue)
-	}
-	if summary.ValidatorRevenue != nil {
-		totalRevenue.Add(totalRevenue, summary.ValidatorRevenue)
-	}
-	if summary.CollatorRevenue != nil {
-		totalRevenue.Add(totalRevenue, summary.CollatorRevenue)
-	}
-	if summary.StakingRevenue != nil {
-		totalRevenue.Add(totalRevenue, summary.StakingRevenue)
-	}
-
+	// Add summary footer
 	embed.Fields = append(embed.Fields, EmbedField{
-		Name:   "🎯 Total Daily Revenue",
-		Value:  formatBalance(totalRevenue, ""),
+		Name:   "────────────────────",
+		Value:  fmt.Sprintf("**Total Portfolio: %s | Daily Change: %s**", totalValueStr, totalRevenueStr),
 		Inline: false,
 	})
 
@@ -288,9 +296,10 @@ func (c *Client) SendValidatorAlert(address, network string, alert ValidatorAler
 	}
 
 	color := 0x0099ff // Blue for info
-	if alert.Type == "unclaimed_rewards" {
+	switch alert.Type {
+	case "unclaimed_rewards":
 		color = 0xffaa00 // Orange for warning
-	} else if alert.Type == "slash" {
+	case "slash":
 		color = 0xff0000 // Red for slash
 	}
 
@@ -317,7 +326,7 @@ func (c *Client) SendValidatorAlert(address, network string, alert ValidatorAler
 	}
 
 	// Add details based on alert type
-	if alert.UnclaimedEras != nil && len(alert.UnclaimedEras) > 0 {
+	if len(alert.UnclaimedEras) > 0 {
 		embed.Fields = append(embed.Fields, EmbedField{
 			Name:   "Unclaimed Eras",
 			Value:  fmt.Sprintf("%v", alert.UnclaimedEras),
@@ -352,6 +361,7 @@ func (c *Client) sendEmbed(embed Embed, isAlert bool) error {
 	if c.isBot {
 		return c.sendBotMessage(embed, isAlert)
 	}
+
 	return c.sendWebhookMessage(embed)
 }
 
@@ -439,15 +449,24 @@ func formatBalance(amount *big.Int, token string) string {
 		return "0"
 	}
 
-	// Convert to float for formatting
+	// Convert to float for formatting (assuming 10 decimals)
 	fAmount := new(big.Float).SetInt(amount)
-	divisor := new(big.Float).SetFloat64(1e10) // Assuming 10 decimals
+	divisor := new(big.Float).SetFloat64(1e10)
 	result := new(big.Float).Quo(fAmount, divisor)
 
-	formatted := fmt.Sprintf("%.4f", result)
+	// Format with sign for changes
+	formatted := ""
+	val, _ := result.Float64()
+	if val >= 0 {
+		formatted = fmt.Sprintf("+%.4f", val)
+	} else {
+		formatted = fmt.Sprintf("%.4f", val)
+	}
+
 	if token != "" {
 		formatted += " " + token
 	}
+
 	return formatted
 }
 
@@ -459,14 +478,16 @@ func formatAddress(address string) string {
 }
 
 type DailySummary struct {
-	TotalAccounts      int
-	ActiveNetworks     int
-	TotalChanges       int
-	ChildBountyRevenue *big.Int
-	ValidatorRevenue   *big.Int
-	CollatorRevenue    *big.Int
-	StakingRevenue     *big.Int
-	AccountSummaries   []AccountSummary
+	TotalAccounts       int
+	ActiveNetworks      int
+	TotalChanges        int
+	TotalPortfolioValue *big.Int
+	TotalDailyRevenue   *big.Int
+	ChildBountyRevenue  *big.Int
+	ValidatorRevenue    *big.Int
+	CollatorRevenue     *big.Int
+	StakingRevenue      *big.Int
+	AccountSummaries    []AccountSummary
 }
 
 type AccountSummary struct {

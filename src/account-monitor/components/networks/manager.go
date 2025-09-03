@@ -12,7 +12,6 @@ import (
 	gstypes "github.com/centrifuge/go-substrate-rpc-client/v4/types"
 	"github.com/centrifuge/go-substrate-rpc-client/v4/types/codec"
 	"github.com/mr-tron/base58"
-
 	"github.com/stake-plus/account-manager/src/account-monitor/components/config"
 	"github.com/stake-plus/account-manager/src/account-monitor/components/database"
 	types "github.com/stake-plus/account-manager/src/account-monitor/components/types"
@@ -124,6 +123,7 @@ func (m *Manager) DiscoverNetworks(ctx context.Context) error {
 						VALUES (?, ?, ?, TRUE)
 						ON DUPLICATE KEY UPDATE detected = TRUE, pallet_index = VALUES(pallet_index)
 					`, network.ID, palletName, module.Index)
+
 					if err != nil {
 						log.Printf("Failed to store pallet info: %v", err)
 					}
@@ -132,8 +132,7 @@ func (m *Manager) DiscoverNetworks(ctx context.Context) error {
 			}
 
 			if hasPallet {
-				log.Printf("  ✓ Found pallet: %s", palletName)
-
+				log.Printf("  ✔ Found pallet: %s", palletName)
 				// Special handling for Assets pallet
 				if palletName == "Assets" {
 					m.discoverAssets(api, network.ID)

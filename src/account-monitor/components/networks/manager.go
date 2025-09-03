@@ -7,9 +7,10 @@ import (
 	"math/big"
 	"sync"
 
+	gsrpc "github.com/centrifuge/go-substrate-rpc-client/v4"
 	"github.com/centrifuge/go-substrate-rpc-client/v4/types"
-	"github.com/stake-plus/account-manager/src/account-monitor/components/config"
-	"github.com/stake-plus/account-manager/src/account-monitor/components/database"
+	"github.com/stake-plus/account-monitor/components/config"
+	"github.com/stake-plus/account-monitor/components/database"
 )
 
 type Manager struct {
@@ -37,10 +38,20 @@ func (m *Manager) getClient(networkName string) (*gsrpc.SubstrateAPI, error) {
 	}
 
 	// Get network details from database
-	var network database.Network
-	err := m.db.QueryRow("SELECT rpc_url, ws_url FROM networks WHERE name = ?", networkName).
-		Scan(&network.RPCURL, &network.WSURL)
+	networks, err := m.db.GetNetworks()
 	if err != nil {
+		return nil, err
+	}
+
+	var network *database.Network
+	for i := range networks {
+		if networks[i].Name == networkName {
+			network = &networks[i]
+			break
+		}
+	}
+
+	if network == nil {
 		return nil, fmt.Errorf("network not found: %s", networkName)
 	}
 
@@ -146,6 +157,12 @@ func (m *Manager) GetBalance(networkName, address string) (database.Balance, err
 		return database.Balance{}, err
 	}
 
+	// Get metadata first
+	meta, err := api.RPC.State.GetMetadataLatest()
+	if err != nil {
+		return database.Balance{}, err
+	}
+
 	// Decode the address
 	accountID, err := types.NewAccountIDFromHexString(address)
 	if err != nil {
@@ -157,7 +174,7 @@ func (m *Manager) GetBalance(networkName, address string) (database.Balance, err
 	}
 
 	// Get account info
-	key, err := types.CreateStorageKey(&meta, "System", "Account", accountID[:])
+	key, err := types.CreateStorageKey(meta, "System", "Account", accountID[:])
 	if err != nil {
 		return database.Balance{}, err
 	}
@@ -173,7 +190,8 @@ func (m *Manager) GetBalance(networkName, address string) (database.Balance, err
 		Free:       accountInfo.Data.Free.Int,
 		Reserved:   accountInfo.Data.Reserved.Int,
 		MiscFrozen: accountInfo.Data.MiscFrozen.Int,
-		FeeFrozen:  accountInfo.Data.FeeFrozen.Int,
+		FeeFrozen:  big.NewInt(0), // FeeFrozen was removed in newer versions
+		Bonded:     big.NewInt(0), // Will be filled from staking pallet
 		Total:      new(big.Int).Add(accountInfo.Data.Free.Int, accountInfo.Data.Reserved.Int),
 	}
 
@@ -182,6 +200,3 @@ func (m *Manager) GetBalance(networkName, address string) (database.Balance, err
 
 	return balance, nil
 }
-
-// Placeholder for metadata - would come from the API
-var meta types.Metadata

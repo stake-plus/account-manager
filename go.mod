@@ -5,8 +5,8 @@ go 1.23.0
 toolchain go1.24.2
 
 require (
-	github.com/centrifuge/go-substrate-rpc-client/v4 v4.2.1
-	github.com/go-sql-driver/mysql v1.9.3
+    github.com/centrifuge/go-substrate-rpc-client/v4 v4.2.1
+    github.com/go-sql-driver/mysql v1.7.1
 )
 
 require (

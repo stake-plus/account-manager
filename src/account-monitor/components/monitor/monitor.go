@@ -123,13 +123,21 @@ func (m *Monitor) checkBalances(ctx context.Context) {
 			// Get current balance from database
 			var currentBalance database.Balance
 			err = m.db.QueryRow(`
-				SELECT free, total FROM balances 
+				SELECT COALESCE(free, 0), COALESCE(total, 0) FROM balances 
 				WHERE account_id = ? AND network_id = ? AND network_token_id = 
 				(SELECT id FROM network_tokens WHERE network_id = ? AND token_type = 'native' LIMIT 1)
 			`, account.ID, network.ID, network.ID).Scan(&currentBalance.Free, &currentBalance.Total)
 
+			// Initialize if nil
+			if currentBalance.Free == nil {
+				currentBalance.Free = big.NewInt(0)
+			}
+			if currentBalance.Total == nil {
+				currentBalance.Total = big.NewInt(0)
+			}
+
 			// Check for balance changes
-			if err == nil && currentBalance.Total != nil {
+			if err == nil {
 				change := new(big.Int).Sub(balance.Total, currentBalance.Total)
 				if change.Cmp(big.NewInt(0)) != 0 {
 					changeType := "increase"

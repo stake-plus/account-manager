@@ -341,20 +341,15 @@ func formatTokenAmountPrecise(amount *big.Int, decimals uint8, symbol string) st
 		return "0.0000"
 	}
 
-	// Get divisor
-	divisor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil)
+	// Use big.Float for precise decimal conversion
+	fAmount := new(big.Float).SetInt(amount)
+	fAmount.SetPrec(256) // Set high precision
 
-	// Get whole and fractional parts
-	whole := new(big.Int).Div(amount, divisor)
-	remainder := new(big.Int).Mod(amount, divisor)
+	divisor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil))
+	result := new(big.Float).Quo(fAmount, divisor)
 
-	// Scale the remainder to get 4 decimal places
-	// We need to multiply remainder by 10000 and divide by divisor
-	scaledRemainder := new(big.Int).Mul(remainder, big.NewInt(10000))
-	fracPart := new(big.Int).Div(scaledRemainder, divisor)
-
-	// Format with exactly 4 decimal places
-	formatted := fmt.Sprintf("%s.%04d", whole.String(), fracPart.Int64())
+	// Format to string with 4 decimal places
+	formatted := result.Text('f', 4)
 
 	if symbol != "" {
 		formatted += " " + symbol

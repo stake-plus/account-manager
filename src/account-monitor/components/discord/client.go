@@ -132,10 +132,18 @@ func (c *Client) SendDailySummary(summary DailySummary) error {
 		msg.WriteString("PORTFOLIO TOTALS BY TOKEN\n\n")
 		for symbol, tokenTotal := range summary.TotalsByToken {
 			if tokenTotal.Total == nil || tokenTotal.Total.Cmp(big.NewInt(0)) == 0 {
+				log.Printf("Skipping zero token total for %s", symbol)
 				continue
 			}
+
+			log.Printf("Formatting portfolio total for %s: value=%v, decimals=%d",
+				symbol, tokenTotal.Total, tokenTotal.Decimals)
+
 			totalStr := formatTokenAmountPrecise(tokenTotal.Total, tokenTotal.Decimals, "")
 			changeStr := formatTokenAmountPrecise(tokenTotal.Change, tokenTotal.Decimals, "")
+
+			log.Printf("Formatted %s: total='%s', change='%s'", symbol, totalStr, changeStr)
+
 			msg.WriteString(fmt.Sprintf("%-10s  Total: %15s  Change: %15s\n",
 				symbol, totalStr, changeStr))
 		}
@@ -165,8 +173,12 @@ func (c *Client) SendDailySummary(summary DailySummary) error {
 					decimals = 10
 				}
 
+				log.Printf("Formatting account %s %s total: value=%v, decimals=%d",
+					account.Name, symbol, total, decimals)
+
 				totalStr := formatTokenAmountPrecise(total, decimals, "")
 				changeStr := formatTokenAmountPrecise(change, decimals, "")
+
 				msg.WriteString(fmt.Sprintf("  %-8s Total: %12s  Change: %12s\n",
 					symbol+":", totalStr, changeStr))
 
@@ -315,47 +327,56 @@ func formatBalance(amount *big.Int, token string) string {
 	return formatted
 }
 
-func formatTokenAmount(amount *big.Int, decimals uint8, symbol string) string {
-	if amount == nil {
-		return "0.0000"
-	}
-
-	// Convert to float for formatting
-	fAmount := new(big.Float).SetInt(amount)
-	divisor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil))
-	result := new(big.Float).Quo(fAmount, divisor)
-
-	val, _ := result.Float64()
-	formatted := fmt.Sprintf("%.4f", val)
-
-	if symbol != "" {
-		formatted += " " + symbol
-	}
-
-	return formatted
-}
-
 // Use string-based arithmetic to avoid float precision issues
 func formatTokenAmountPrecise(amount *big.Int, decimals uint8, symbol string) string {
-	if amount == nil || amount.Cmp(big.NewInt(0)) == 0 {
+	if amount == nil {
+		log.Printf("formatTokenAmountPrecise: amount is nil")
 		return "0.0000"
 	}
 
-	// Use big.Float for precise decimal conversion
-	fAmount := new(big.Float).SetInt(amount)
-	fAmount.SetPrec(256) // Set high precision
-
-	divisor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil))
-	result := new(big.Float).Quo(fAmount, divisor)
-
-	// Format to string with 4 decimal places
-	formatted := result.Text('f', 4)
-
-	if symbol != "" {
-		formatted += " " + symbol
+	if amount.Cmp(big.NewInt(0)) == 0 {
+		return "0.0000"
 	}
 
-	return formatted
+	// Log the input values
+	log.Printf("formatTokenAmountPrecise: amount=%s, decimals=%d", amount.String(), decimals)
+
+	// Use string manipulation instead of big.Float
+	amountStr := amount.String()
+
+	// Calculate where to place the decimal point
+	decimalPos := len(amountStr) - int(decimals)
+
+	var result string
+	if decimalPos <= 0 {
+		// Number is less than 1, need to pad with zeros
+		zeros := strings.Repeat("0", -decimalPos)
+		result = "0." + zeros + amountStr
+	} else {
+		// Insert decimal point
+		result = amountStr[:decimalPos] + "." + amountStr[decimalPos:]
+	}
+
+	// Ensure we have at least 4 decimal places
+	dotIndex := strings.Index(result, ".")
+	if dotIndex == -1 {
+		result += ".0000"
+	} else {
+		decimalsAfterDot := len(result) - dotIndex - 1
+		if decimalsAfterDot < 4 {
+			result += strings.Repeat("0", 4-decimalsAfterDot)
+		} else if decimalsAfterDot > 4 {
+			result = result[:dotIndex+5] // Keep only 4 decimal places
+		}
+	}
+
+	log.Printf("formatTokenAmountPrecise: result='%s'", result)
+
+	if symbol != "" {
+		result += " " + symbol
+	}
+
+	return result
 }
 
 func formatAddress(address string) string {

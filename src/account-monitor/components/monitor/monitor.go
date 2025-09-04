@@ -143,59 +143,73 @@ func (m *Monitor) checkBalances(ctx context.Context) {
 			m.processTokenBalance(account, network, nativeToken, balance, accountBalance,
 				portfolioTotalsByToken, portfolioChangesByToken, "native")
 
-			// Check ALL asset tokens (remove the 5 asset limit)
-			rows, err := m.db.Query(`
-				SELECT id, symbol, decimals, token_id 
-				FROM network_tokens 
-				WHERE network_id = ? AND token_type IN ('asset', 'foreign_asset')
-			`, network.ID)
+			// Check ALL asset tokens
+			if network.Name == "polkadot-assethub" || network.Name == "kusama-assethub" {
+				log.Printf("  Checking assets on %s for %s", network.Name, account.Address)
 
-			if err == nil && rows != nil {
-				func() {
-					defer rows.Close()
+				rows, err := m.db.Query(`
+					SELECT id, symbol, decimals, token_id 
+					FROM network_tokens 
+					WHERE network_id = ? AND token_type IN ('asset', 'foreign_asset')
+					ORDER BY token_type, CAST(token_id AS UNSIGNED)
+				`, network.ID)
 
-					checkedAssets := 0
-					foundAssets := 0
-					for rows.Next() {
-						var assetToken types.NetworkToken
-						var tokenID sql.NullString
-						if err := rows.Scan(&assetToken.ID, &assetToken.Symbol, &assetToken.Decimals, &tokenID); err != nil {
-							continue
+				if err == nil && rows != nil {
+					func() {
+						defer rows.Close()
+
+						checkedAssets := 0
+						foundAssets := 0
+						for rows.Next() {
+							var assetToken types.NetworkToken
+							var tokenID sql.NullString
+							if err := rows.Scan(&assetToken.ID, &assetToken.Symbol, &assetToken.Decimals, &tokenID); err != nil {
+								continue
+							}
+
+							if !tokenID.Valid || tokenID.String == "" {
+								continue
+							}
+
+							checkedAssets++
+
+							// Log every 50th asset to show progress
+							if checkedAssets%50 == 0 {
+								log.Printf("    Checked %d assets so far...", checkedAssets)
+							}
+
+							// Get asset balance
+							assetBalance, err := m.networks.GetAssetBalance(network.Name, account.Address, tokenID.String)
+							if err != nil {
+								// Only log actual errors, not zero balances
+								if !strings.Contains(err.Error(), "not found") {
+									log.Printf("    Error checking asset %s (%s): %v", assetToken.Symbol, tokenID.String, err)
+								}
+								continue
+							}
+
+							if assetBalance.Total == nil || assetBalance.Total.Cmp(big.NewInt(0)) == 0 {
+								continue
+							}
+
+							foundAssets++
+							log.Printf("    Found %s balance: %v (token_id=%s)", assetToken.Symbol, assetBalance.Total, tokenID.String)
+
+							// Process asset balance
+							tokenType := "asset"
+							if strings.Contains(assetToken.Symbol, "FA") || tokenID.String[0] > '9' {
+								tokenType = "foreign_asset"
+							}
+
+							m.processTokenBalance(account, network, assetToken, assetBalance, accountBalance,
+								portfolioTotalsByToken, portfolioChangesByToken, tokenType)
 						}
 
-						if !tokenID.Valid || tokenID.String == "" {
-							continue
-						}
-
-						checkedAssets++
-
-						// Get asset balance for ALL assets
-						assetBalance, err := m.networks.GetAssetBalance(network.Name, account.Address, tokenID.String)
-						if err != nil {
-							continue
-						}
-
-						if assetBalance.Total == nil || assetBalance.Total.Cmp(big.NewInt(0)) == 0 {
-							continue
-						}
-
-						foundAssets++
-						log.Printf("    Found %s balance: %v", assetToken.Symbol, assetBalance.Total)
-
-						// Process asset balance
-						tokenType := "asset"
-						if strings.Contains(string(network.Name), "foreign") {
-							tokenType = "foreign_asset"
-						}
-
-						m.processTokenBalance(account, network, assetToken, assetBalance, accountBalance,
-							portfolioTotalsByToken, portfolioChangesByToken, tokenType)
-					}
-
-					if foundAssets > 0 {
-						log.Printf("    Found %d non-zero asset balances out of %d checked", foundAssets, checkedAssets)
-					}
-				}()
+						log.Printf("    Checked %d assets total, found %d with non-zero balance", checkedAssets, foundAssets)
+					}()
+				} else {
+					log.Printf("    No assets to check on %s", network.Name)
+				}
 			}
 		}
 
@@ -397,11 +411,12 @@ func (m *Monitor) sendDailySummary(accountBalances map[uint]*AccountBalance,
 		return
 	}
 
-	// Get token decimals map
+	// Get token decimals map - THIS IS THE KEY FIX
 	tokenDecimals := make(map[string]uint8)
 	rows, err := m.db.Query(`
 		SELECT DISTINCT symbol, decimals 
-		FROM network_tokens
+		FROM network_tokens 
+		WHERE token_type = 'native'
 	`)
 	if err == nil && rows != nil {
 		defer rows.Close()
@@ -410,6 +425,7 @@ func (m *Monitor) sendDailySummary(accountBalances map[uint]*AccountBalance,
 			var decimals uint8
 			if err := rows.Scan(&symbol, &decimals); err == nil {
 				tokenDecimals[symbol] = decimals
+				log.Printf("Token decimals: %s = %d", symbol, decimals)
 			}
 		}
 	}
@@ -432,7 +448,7 @@ func (m *Monitor) sendDailySummary(accountBalances map[uint]*AccountBalance,
 	}
 	summary.ActiveNetworks = len(networksUsed)
 
-	// Build token totals with proper values
+	// Build token totals with CORRECT decimals
 	for symbol, total := range portfolioTotalsByToken {
 		if total == nil {
 			continue
@@ -443,9 +459,24 @@ func (m *Monitor) sendDailySummary(accountBalances map[uint]*AccountBalance,
 			change = big.NewInt(0)
 		}
 
+		// Get correct decimals for this token
 		decimals := tokenDecimals[symbol]
 		if decimals == 0 {
-			decimals = 10
+			// Fallback: try to get from any token balance
+			for _, ab := range accountBalances {
+				for _, tb := range ab.TokenBalances {
+					if tb.Symbol == symbol && tb.Decimals > 0 {
+						decimals = tb.Decimals
+						break
+					}
+				}
+				if decimals > 0 {
+					break
+				}
+			}
+			if decimals == 0 {
+				decimals = 10 // Last resort default
+			}
 		}
 
 		// Create copies of the big.Int values
@@ -459,7 +490,8 @@ func (m *Monitor) sendDailySummary(accountBalances map[uint]*AccountBalance,
 			Decimals: decimals,
 		}
 
-		log.Printf("Added to summary - %s: total=%v, change=%v", symbol, totalCopy, changeCopy)
+		log.Printf("Added to summary - %s: total=%v, change=%v, decimals=%d",
+			symbol, totalCopy, changeCopy, decimals)
 	}
 
 	// Build account summaries

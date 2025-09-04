@@ -127,7 +127,6 @@ func (m *Manager) DiscoverNetworks(ctx context.Context) error {
 						VALUES (?, ?, ?, TRUE)
 						ON DUPLICATE KEY UPDATE detected = TRUE, pallet_index = VALUES(pallet_index)
 					`, network.ID, palletName, module.Index)
-
 					if err != nil {
 						log.Printf("Failed to store pallet info: %v", err)
 					}
@@ -142,7 +141,7 @@ func (m *Manager) DiscoverNetworks(ctx context.Context) error {
 				case "Assets":
 					m.discoverAssets(api, network.ID, "Assets")
 				case "ForeignAssets":
-					m.discoverAssets(api, network.ID, "ForeignAssets")
+					m.discoverForeignAssets(api, network.ID)
 				}
 			}
 		}
@@ -278,8 +277,6 @@ func (m *Manager) GetBalance(networkName, addressStr string) (types.Balance, err
 	return balance, nil
 }
 
-// Replace the discoverAssets function in networks/manager.go with this:
-
 func (m *Manager) discoverAssets(api *gsrpc.SubstrateAPI, networkID uint, palletName string) {
 	log.Printf("    Discovering %s for network ID %d", palletName, networkID)
 
@@ -332,8 +329,142 @@ func (m *Manager) discoverAssets(api *gsrpc.SubstrateAPI, networkID uint, pallet
 		if err != nil {
 			log.Printf("Failed to insert asset %d: %v", assetID, err)
 		} else {
-			log.Printf("      Asset %d: %s (%s) - %d decimals", assetID, metadata.Name, metadata.Symbol, metadata.Decimals)
+			log.Printf("      Asset %d: %s (%s) - %d decimals",
+				assetID, metadata.Name, metadata.Symbol, metadata.Decimals)
 		}
+	}
+}
+
+func (m *Manager) discoverForeignAssets(api *gsrpc.SubstrateAPI, networkID uint) {
+	log.Printf("    Discovering ForeignAssets for network ID %d", networkID)
+
+	meta, err := api.RPC.State.GetMetadataLatest()
+	if err != nil {
+		log.Printf("Failed to get metadata: %v", err)
+		return
+	}
+
+	// Get all storage keys for foreign assets
+	prefix := append(Twox128([]byte("ForeignAssets")), Twox128([]byte("Asset"))...)
+	keys, err := api.RPC.State.GetKeysLatest(prefix)
+	if err != nil {
+		log.Printf("Failed to get foreign asset keys: %v", err)
+		return
+	}
+
+	log.Printf("    Found %d assets in ForeignAssets", len(keys))
+
+	// Map of known foreign assets on Polkadot Asset Hub
+	knownForeignAssets := map[uint32]struct {
+		Symbol   string
+		Name     string
+		Decimals uint8
+	}{
+		50921730: {"KSM", "Kusama", 12},
+		// Add more known foreign assets here as needed
+	}
+
+	// Process each foreign asset
+	for _, key := range keys {
+		// For ForeignAssets, the key contains a MultiLocation encoded as a u32
+		if len(key[:]) < 52 {
+			continue
+		}
+
+		// Extract the MultiLocation ID (stored as u32)
+		assetIDBytes := key[48:52]
+		assetID := binary.LittleEndian.Uint32(assetIDBytes)
+
+		var metadata AssetMetadata
+
+		// Check if this is a known foreign asset
+		if known, ok := knownForeignAssets[assetID]; ok {
+			metadata = AssetMetadata{
+				Name:     known.Name,
+				Symbol:   known.Symbol,
+				Decimals: known.Decimals,
+			}
+		} else {
+			// Try to get metadata from chain
+			metadata = m.getForeignAssetMetadata(api, assetID, meta)
+		}
+
+		// Store the foreign asset
+		_, err = m.db.Exec(`
+			INSERT INTO network_tokens 
+			(network_id, token_type, token_id, symbol, name, decimals, pallet_name, active)
+			VALUES (?, ?, ?, ?, ?, ?, ?, TRUE)
+			ON DUPLICATE KEY UPDATE 
+			symbol = VALUES(symbol),
+			name = VALUES(name),
+			decimals = VALUES(decimals),
+			active = TRUE
+		`, networkID, "foreign_asset", fmt.Sprintf("%d", assetID),
+			metadata.Symbol, metadata.Name, metadata.Decimals, "ForeignAssets")
+
+		if err != nil {
+			log.Printf("Failed to insert foreign asset %d: %v", assetID, err)
+		} else {
+			log.Printf("      Asset %d: %s (%s) - %d decimals",
+				assetID, metadata.Name, metadata.Symbol, metadata.Decimals)
+		}
+	}
+}
+
+func (m *Manager) getForeignAssetMetadata(api *gsrpc.SubstrateAPI, assetID uint32, meta *gstypes.Metadata) AssetMetadata {
+	// Create storage key for Metadata in ForeignAssets
+	assetIDBytes := make([]byte, 4)
+	binary.LittleEndian.PutUint32(assetIDBytes, assetID)
+
+	// Try to get metadata using storage query
+	key, err := gstypes.CreateStorageKey(meta, "ForeignAssets", "Metadata", assetIDBytes)
+	if err == nil {
+		var rawData gstypes.StorageDataRaw
+		ok, err := api.RPC.State.GetStorageLatest(key, &rawData)
+		if err == nil && ok && len(rawData) > 16 {
+			// Try to decode the metadata
+			data := []byte(rawData)
+			offset := 16 // Skip deposit
+
+			// Try to extract name
+			nameLen, bytesRead := decodeCompact(data[offset:])
+			offset += bytesRead
+			name := ""
+			if offset+int(nameLen) <= len(data) {
+				name = string(data[offset : offset+int(nameLen)])
+				offset += int(nameLen)
+			}
+
+			// Try to extract symbol
+			symbolLen, bytesRead := decodeCompact(data[offset:])
+			offset += bytesRead
+			symbol := ""
+			if offset+int(symbolLen) <= len(data) {
+				symbol = string(data[offset : offset+int(symbolLen)])
+				offset += int(symbolLen)
+			}
+
+			// Try to extract decimals
+			decimals := uint8(10)
+			if offset < len(data) {
+				decimals = data[offset]
+			}
+
+			if name != "" && symbol != "" {
+				return AssetMetadata{
+					Name:     name,
+					Symbol:   symbol,
+					Decimals: decimals,
+				}
+			}
+		}
+	}
+
+	// Fallback for unknown foreign assets
+	return AssetMetadata{
+		Name:     fmt.Sprintf("Foreign Asset #%d", assetID),
+		Symbol:   fmt.Sprintf("FA%d", assetID),
+		Decimals: 10,
 	}
 }
 
@@ -349,6 +480,7 @@ func extractAssetIDFromKey(keyBytes []byte) (uint32, error) {
 
 	// Asset ID is u32 (4 bytes) in little-endian
 	assetID := binary.LittleEndian.Uint32(assetIDBytes)
+
 	return assetID, nil
 }
 
@@ -358,8 +490,6 @@ type AssetMetadata struct {
 	Symbol   string
 	Decimals uint8
 }
-
-// Replace the getAssetMetadata function in manager.go with this:
 
 func (m *Manager) getAssetMetadata(api *gsrpc.SubstrateAPI, palletName string, assetID uint32) AssetMetadata {
 	// Create storage key for Metadata
@@ -485,7 +615,6 @@ func decodeCompact(data []byte) (uint64, int) {
 	return 0, 0
 }
 
-// Also fix GetAssetBalance to handle numeric asset IDs properly
 func (m *Manager) GetAssetBalance(networkName, address, assetID string) (types.Balance, error) {
 	api, err := m.getClient(networkName)
 	if err != nil {
@@ -526,7 +655,6 @@ func (m *Manager) GetAssetBalance(networkName, address, assetID string) (types.B
 			Reason  interface{}
 			Extra   interface{}
 		}
-
 		ok, err := api.RPC.State.GetStorageLatest(key, &assetAccount)
 		if err == nil && ok {
 			return types.Balance{
@@ -549,7 +677,6 @@ func (m *Manager) GetAssetBalance(networkName, address, assetID string) (types.B
 			Reason  interface{}
 			Extra   interface{}
 		}
-
 		ok, err := api.RPC.State.GetStorageLatest(key, &assetAccount)
 		if err == nil && ok {
 			return types.Balance{

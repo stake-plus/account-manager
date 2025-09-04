@@ -106,7 +106,8 @@ func (m *Monitor) checkBalances(ctx context.Context) {
 			// Get native token balance
 			balance, err := m.networks.GetBalance(network.Name, account.Address)
 			if err != nil {
-				log.Printf("Failed to get balance for %s on %s: %v", account.Address, network.Name, err)
+				log.Printf("Failed to get balance for %s on %s: %v",
+					account.Address, network.Name, err)
 				continue
 			}
 
@@ -135,6 +136,7 @@ func (m *Monitor) checkBalances(ctx context.Context) {
 
 			if err == nil {
 				defer rows.Close()
+
 				for rows.Next() {
 					var assetToken types.NetworkToken
 					var tokenID sql.NullString
@@ -142,9 +144,13 @@ func (m *Monitor) checkBalances(ctx context.Context) {
 						continue
 					}
 
+					if !tokenID.Valid {
+						continue
+					}
+
 					// Get asset balance
 					assetBalance, err := m.networks.GetAssetBalance(network.Name, account.Address, tokenID.String)
-					if err != nil || assetBalance.Total.Cmp(big.NewInt(0)) == 0 {
+					if err != nil || assetBalance.Total == nil || assetBalance.Total.Cmp(big.NewInt(0)) == 0 {
 						continue
 					}
 
@@ -153,6 +159,7 @@ func (m *Monitor) checkBalances(ctx context.Context) {
 					if strings.Contains(assetToken.Symbol, "foreign") {
 						tokenType = "foreign_asset"
 					}
+
 					m.processTokenBalance(account, network, assetToken, assetBalance, accountBalance,
 						portfolioTotalsByToken, portfolioChangesByToken, tokenType)
 				}
@@ -172,19 +179,70 @@ func (m *Monitor) processTokenBalance(account types.Account, network types.Netwo
 	token types.NetworkToken, balance types.Balance, accountBalance *AccountBalance,
 	portfolioTotalsByToken, portfolioChangesByToken map[string]*big.Int, tokenType string) {
 
-	// Check for balance changes
-	var previousBalance types.Balance
+	// Initialize balance values if nil
+	if balance.Free == nil {
+		balance.Free = big.NewInt(0)
+	}
+	if balance.Reserved == nil {
+		balance.Reserved = big.NewInt(0)
+	}
+	if balance.MiscFrozen == nil {
+		balance.MiscFrozen = big.NewInt(0)
+	}
+	if balance.FeeFrozen == nil {
+		balance.FeeFrozen = big.NewInt(0)
+	}
+	if balance.Bonded == nil {
+		balance.Bonded = big.NewInt(0)
+	}
+	if balance.Total == nil {
+		balance.Total = big.NewInt(0)
+	}
+
+	// Check for balance changes - initialize previousBalance properly
+	previousBalance := types.Balance{
+		Free:       big.NewInt(0),
+		Reserved:   big.NewInt(0),
+		MiscFrozen: big.NewInt(0),
+		FeeFrozen:  big.NewInt(0),
+		Bonded:     big.NewInt(0),
+		Total:      big.NewInt(0),
+	}
+
+	// Try to get previous balance
+	var prevFree, prevReserved, prevMisc, prevFee, prevBonded, prevTotal string
 	err := m.db.QueryRow(`
 		SELECT free, reserved, misc_frozen, fee_frozen, bonded, total 
 		FROM balances 
 		WHERE account_id = ? AND network_id = ? AND network_token_id = ?
 	`, account.ID, network.ID, token.ID).Scan(
-		&previousBalance.Free, &previousBalance.Reserved,
-		&previousBalance.MiscFrozen, &previousBalance.FeeFrozen,
-		&previousBalance.Bonded, &previousBalance.Total,
+		&prevFree, &prevReserved, &prevMisc, &prevFee, &prevBonded, &prevTotal,
 	)
 
 	balanceExists := err == nil
+
+	// Parse previous balance strings if they exist
+	if balanceExists {
+		if val, ok := new(big.Int).SetString(prevFree, 10); ok {
+			previousBalance.Free = val
+		}
+		if val, ok := new(big.Int).SetString(prevReserved, 10); ok {
+			previousBalance.Reserved = val
+		}
+		if val, ok := new(big.Int).SetString(prevMisc, 10); ok {
+			previousBalance.MiscFrozen = val
+		}
+		if val, ok := new(big.Int).SetString(prevFee, 10); ok {
+			previousBalance.FeeFrozen = val
+		}
+		if val, ok := new(big.Int).SetString(prevBonded, 10); ok {
+			previousBalance.Bonded = val
+		}
+		if val, ok := new(big.Int).SetString(prevTotal, 10); ok {
+			previousBalance.Total = val
+		}
+	}
+
 	change := new(big.Int).Sub(balance.Total, previousBalance.Total)
 
 	// Store token balance info using discord.TokenBalance
@@ -198,7 +256,6 @@ func (m *Monitor) processTokenBalance(account types.Account, network types.Netwo
 	}
 	accountBalance.TokenBalances = append(accountBalance.TokenBalances, tokenBal)
 
-	// Rest of the function remains the same...
 	// Update totals by token
 	if accountBalance.TotalsByToken[token.Symbol] == nil {
 		accountBalance.TotalsByToken[token.Symbol] = big.NewInt(0)
@@ -217,7 +274,7 @@ func (m *Monitor) processTokenBalance(account types.Account, network types.Netwo
 
 	// Update database
 	if balanceExists {
-		m.db.Exec(`
+		_, err = m.db.Exec(`
 			UPDATE balances SET 
 				free = ?, reserved = ?, misc_frozen = ?, 
 				fee_frozen = ?, bonded = ?, total = ?, 
@@ -227,8 +284,11 @@ func (m *Monitor) processTokenBalance(account types.Account, network types.Netwo
 			balance.MiscFrozen.String(), balance.FeeFrozen.String(),
 			balance.Bonded.String(), balance.Total.String(),
 			account.ID, network.ID, token.ID)
+		if err != nil {
+			log.Printf("Failed to update balance: %v", err)
+		}
 	} else {
-		m.db.Exec(`
+		_, err = m.db.Exec(`
 			INSERT INTO balances 
 			(account_id, network_id, network_token_id, free, reserved, 
 			 misc_frozen, fee_frozen, bonded, total)
@@ -237,6 +297,9 @@ func (m *Monitor) processTokenBalance(account types.Account, network types.Netwo
 			balance.Free.String(), balance.Reserved.String(),
 			balance.MiscFrozen.String(), balance.FeeFrozen.String(),
 			balance.Bonded.String(), balance.Total.String())
+		if err != nil {
+			log.Printf("Failed to insert balance: %v", err)
+		}
 	}
 
 	// Send notification if significant change
@@ -249,17 +312,20 @@ func (m *Monitor) processTokenBalance(account types.Account, network types.Netwo
 		changeFloat := new(big.Float).SetInt(change)
 		divisor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(token.Decimals)), nil))
 		changeFloat.Quo(changeFloat, divisor)
-		changeValue, _ := changeFloat.Float64()
 
+		changeValue, _ := changeFloat.Float64()
 		if changeValue < 0 {
 			changeValue = -changeValue
 		}
 
 		if changeValue >= m.config.MinBalanceChangeNotification && account.DiscordNotify {
 			if m.discord != nil {
-				m.discord.SendBalanceChangeNotification(
+				err := m.discord.SendBalanceChangeNotification(
 					account.Address, network.Name, token.Symbol,
 					previousBalance.Total, balance.Total, changeType)
+				if err != nil {
+					log.Printf("Failed to send Discord notification: %v", err)
+				}
 			}
 		}
 	}
@@ -275,11 +341,11 @@ func (m *Monitor) sendDailySummary(accountBalances map[uint]*AccountBalance,
 
 	// Get token decimals map
 	tokenDecimals := make(map[string]uint8)
-	rows, _ := m.db.Query(`
+	rows, err := m.db.Query(`
 		SELECT DISTINCT symbol, decimals 
 		FROM network_tokens
 	`)
-	if rows != nil {
+	if err == nil && rows != nil {
 		defer rows.Close()
 		for rows.Next() {
 			var symbol string
@@ -301,7 +367,7 @@ func (m *Monitor) sendDailySummary(accountBalances map[uint]*AccountBalance,
 	networksUsed := make(map[string]bool)
 	for _, ab := range accountBalances {
 		for _, tb := range ab.TokenBalances {
-			if tb.Balance.Cmp(big.NewInt(0)) > 0 {
+			if tb.Balance != nil && tb.Balance.Cmp(big.NewInt(0)) > 0 {
 				networksUsed[tb.Network] = true
 			}
 		}
@@ -351,7 +417,10 @@ func (m *Monitor) sendDailySummary(accountBalances map[uint]*AccountBalance,
 	summary.StakingRevenue = big.NewInt(0)
 
 	// Send the summary
-	m.discord.SendDailySummary(summary)
+	err = m.discord.SendDailySummary(summary)
+	if err != nil {
+		log.Printf("Failed to send daily summary: %v", err)
+	}
 }
 
 func (m *Monitor) StartValidatorMonitor(ctx context.Context, interval time.Duration) {

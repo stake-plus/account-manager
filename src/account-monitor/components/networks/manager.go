@@ -1,7 +1,6 @@
 package networks
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -19,7 +18,6 @@ import (
 	"github.com/stake-plus/account-manager/src/account-monitor/components/config"
 	"github.com/stake-plus/account-manager/src/account-monitor/components/database"
 	types "github.com/stake-plus/account-manager/src/account-monitor/components/types"
-	"github.com/vedhavyas/go-subkey/v2/scale"
 	"golang.org/x/crypto/blake2b"
 )
 
@@ -361,7 +359,8 @@ type AssetMetadata struct {
 	Decimals uint8
 }
 
-// Add this function to fetch asset metadata
+// Replace the getAssetMetadata function in manager.go with this:
+
 func (m *Manager) getAssetMetadata(api *gsrpc.SubstrateAPI, palletName string, assetID uint32) AssetMetadata {
 	// Create storage key for Metadata
 	assetIDBytes := make([]byte, 4)
@@ -381,9 +380,9 @@ func (m *Manager) getAssetMetadata(api *gsrpc.SubstrateAPI, palletName string, a
 	key = append(key, assetIDBytes...)
 
 	// Query the storage
-	var data []byte
-	ok, err := api.RPC.State.GetStorageLatest(key, &data)
-	if err != nil || !ok || len(data) == 0 {
+	var rawData gstypes.StorageDataRaw
+	ok, err := api.RPC.State.GetStorageLatest(gstypes.NewStorageKey(key), &rawData)
+	if err != nil || !ok || len(rawData) == 0 {
 		// Return defaults if no metadata
 		return AssetMetadata{
 			Name:     fmt.Sprintf("Asset #%d", assetID),
@@ -392,12 +391,9 @@ func (m *Manager) getAssetMetadata(api *gsrpc.SubstrateAPI, palletName string, a
 		}
 	}
 
-	// Decode the metadata using SCALE
-	decoder := scale.NewDecoder(bytes.NewReader(data))
-
-	// Decode name (Vec<u8>)
-	var nameBytes []byte
-	if err := decoder.Decode(&nameBytes); err != nil {
+	// Manual SCALE decoding
+	data := []byte(rawData)
+	if len(data) < 16 {
 		return AssetMetadata{
 			Name:     fmt.Sprintf("Asset #%d", assetID),
 			Symbol:   fmt.Sprintf("ASSET%d", assetID),
@@ -405,27 +401,88 @@ func (m *Manager) getAssetMetadata(api *gsrpc.SubstrateAPI, palletName string, a
 		}
 	}
 
-	// Decode symbol (Vec<u8>)
-	var symbolBytes []byte
-	if err := decoder.Decode(&symbolBytes); err != nil {
+	offset := 0
+
+	// Skip deposit (u128 - 16 bytes)
+	offset += 16
+
+	// Decode name (Compact<u32> length + bytes)
+	nameLen, bytesRead := decodeCompact(data[offset:])
+	offset += bytesRead
+
+	if offset+int(nameLen) > len(data) {
 		return AssetMetadata{
-			Name:     string(nameBytes),
+			Name:     fmt.Sprintf("Asset #%d", assetID),
 			Symbol:   fmt.Sprintf("ASSET%d", assetID),
 			Decimals: 10,
 		}
 	}
 
+	name := string(data[offset : offset+int(nameLen)])
+	offset += int(nameLen)
+
+	// Decode symbol (Compact<u32> length + bytes)
+	symbolLen, bytesRead := decodeCompact(data[offset:])
+	offset += bytesRead
+
+	if offset+int(symbolLen) > len(data) {
+		return AssetMetadata{
+			Name:     name,
+			Symbol:   fmt.Sprintf("ASSET%d", assetID),
+			Decimals: 10,
+		}
+	}
+
+	symbol := string(data[offset : offset+int(symbolLen)])
+	offset += int(symbolLen)
+
 	// Decode decimals (u8)
-	var decimals uint8
-	if err := decoder.Decode(&decimals); err != nil {
-		decimals = 10
+	decimals := uint8(10) // default
+	if offset < len(data) {
+		decimals = data[offset]
 	}
 
 	return AssetMetadata{
-		Name:     string(nameBytes),
-		Symbol:   string(symbolBytes),
+		Name:     name,
+		Symbol:   symbol,
 		Decimals: decimals,
 	}
+}
+
+// Helper function to decode SCALE compact integers
+func decodeCompact(data []byte) (uint64, int) {
+	if len(data) == 0 {
+		return 0, 0
+	}
+
+	flag := data[0] & 0x03
+
+	switch flag {
+	case 0: // single byte mode
+		return uint64(data[0] >> 2), 1
+	case 1: // two byte mode
+		if len(data) < 2 {
+			return 0, 0
+		}
+		return uint64(binary.LittleEndian.Uint16(data[:2]) >> 2), 2
+	case 2: // four byte mode
+		if len(data) < 4 {
+			return 0, 0
+		}
+		return uint64(binary.LittleEndian.Uint32(data[:4]) >> 2), 4
+	case 3: // big integer mode
+		n := int(data[0]>>2) + 4
+		if len(data) < n+1 {
+			return 0, 0
+		}
+		var result uint64
+		for i := 0; i < n && i < 8; i++ {
+			result |= uint64(data[i+1]) << (8 * i)
+		}
+		return result, n + 1
+	}
+
+	return 0, 0
 }
 
 // Also fix GetAssetBalance to handle numeric asset IDs properly

@@ -121,7 +121,6 @@ func (c *Client) SendDailySummary(summary DailySummary) error {
 	}
 
 	var msg strings.Builder
-
 	msg.WriteString(fmt.Sprintf("**📊 Daily Portfolio Summary - %s**\n", time.Now().Format("2006-01-02")))
 	msg.WriteString("```\n")
 	msg.WriteString(fmt.Sprintf("Active Accounts: %d | Active Networks: %d\n",
@@ -132,6 +131,9 @@ func (c *Client) SendDailySummary(summary DailySummary) error {
 	if len(summary.TotalsByToken) > 0 {
 		msg.WriteString("PORTFOLIO TOTALS BY TOKEN\n\n")
 		for symbol, tokenTotal := range summary.TotalsByToken {
+			if tokenTotal.Total == nil || tokenTotal.Total.Cmp(big.NewInt(0)) == 0 {
+				continue
+			}
 			totalStr := formatTokenAmount(tokenTotal.Total, tokenTotal.Decimals, "")
 			changeStr := formatTokenAmount(tokenTotal.Change, tokenTotal.Decimals, "")
 			msg.WriteString(fmt.Sprintf("%-10s  Total: %15s  Change: %15s\n",
@@ -149,7 +151,7 @@ func (c *Client) SendDailySummary(summary DailySummary) error {
 			// Group balances by token
 			tokenGroups := make(map[string][]*TokenBalance)
 			for _, tb := range account.TokenBalances {
-				if tb.Balance.Cmp(big.NewInt(0)) > 0 {
+				if tb.Balance != nil && tb.Balance.Cmp(big.NewInt(0)) > 0 {
 					tokenGroups[tb.Symbol] = append(tokenGroups[tb.Symbol], tb)
 				}
 			}
@@ -158,7 +160,6 @@ func (c *Client) SendDailySummary(summary DailySummary) error {
 			for symbol, balances := range tokenGroups {
 				total := account.TotalsByToken[symbol]
 				change := account.ChangesByToken[symbol]
-
 				decimals := summary.TokenDecimals[symbol]
 				if decimals == 0 {
 					decimals = 10
@@ -166,15 +167,14 @@ func (c *Client) SendDailySummary(summary DailySummary) error {
 
 				totalStr := formatTokenAmount(total, decimals, "")
 				changeStr := formatTokenAmount(change, decimals, "")
-
 				msg.WriteString(fmt.Sprintf("  %-8s Total: %12s  Change: %12s\n",
 					symbol+":", totalStr, changeStr))
 
 				// Show network breakdown
 				for _, bal := range balances {
 					balStr := formatTokenAmount(bal.Balance, bal.Decimals, "")
-					msg.WriteString(fmt.Sprintf("    %-12s %12s", bal.Network+":", balStr))
-					if bal.Change.Cmp(big.NewInt(0)) != 0 {
+					msg.WriteString(fmt.Sprintf("    %-20s %12s", bal.Network+":", balStr))
+					if bal.Change != nil && bal.Change.Cmp(big.NewInt(0)) != 0 {
 						changeStr := formatTokenAmount(bal.Change, bal.Decimals, "")
 						msg.WriteString(fmt.Sprintf(" (%s)", changeStr))
 					}
@@ -211,11 +211,9 @@ func (c *Client) SendValidatorAlert(address, network string, alert ValidatorAler
 	if len(alert.UnclaimedEras) > 0 {
 		msg += fmt.Sprintf("Unclaimed Eras: %v\n", alert.UnclaimedEras)
 	}
-
 	if alert.UnclaimedAmount != nil {
 		msg += fmt.Sprintf("Claimable: %s\n", formatBalance(alert.UnclaimedAmount, ""))
 	}
-
 	if alert.ExpiredAmount != nil {
 		msg += fmt.Sprintf("Expired: %s\n", formatBalance(alert.ExpiredAmount, ""))
 	}
@@ -231,7 +229,6 @@ func (c *Client) sendMessage(content string, isAlert bool) error {
 	if c.isBot {
 		return c.sendBotMessage(content, isAlert)
 	}
-
 	return c.sendWebhookMessage(content)
 }
 
@@ -306,6 +303,7 @@ func formatBalance(amount *big.Int, token string) string {
 	// Format with sign for changes
 	val, _ := result.Float64()
 	formatted := fmt.Sprintf("%.4f", val)
+
 	if val >= 0 && amount.Cmp(big.NewInt(0)) > 0 {
 		formatted = "+" + formatted
 	}
@@ -319,7 +317,7 @@ func formatBalance(amount *big.Int, token string) string {
 
 func formatTokenAmount(amount *big.Int, decimals uint8, symbol string) string {
 	if amount == nil {
-		return "0"
+		return "0.0000"
 	}
 
 	// Convert to float for formatting
@@ -329,10 +327,8 @@ func formatTokenAmount(amount *big.Int, decimals uint8, symbol string) string {
 
 	val, _ := result.Float64()
 	formatted := fmt.Sprintf("%.4f", val)
-	if val > 0 && amount.Cmp(big.NewInt(0)) > 0 {
-		formatted = "+" + formatted
-	}
 
+	// Don't add + for display in summary
 	if symbol != "" {
 		formatted += " " + symbol
 	}

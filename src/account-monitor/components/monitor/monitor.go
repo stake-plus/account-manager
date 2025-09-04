@@ -115,8 +115,6 @@ func (m *Monitor) checkBalances(ctx context.Context) {
 				continue
 			}
 
-			log.Printf("  Checking %s on network %s", account.Address, network.Name)
-
 			// Get native token balance
 			balance, err := m.networks.GetBalance(network.Name, account.Address)
 			if err != nil {
@@ -125,8 +123,9 @@ func (m *Monitor) checkBalances(ctx context.Context) {
 				continue
 			}
 
-			log.Printf("  Got balance: Free=%v, Reserved=%v, Total=%v",
-				balance.Free, balance.Reserved, balance.Total)
+			if balance.Total != nil && balance.Total.Cmp(big.NewInt(0)) > 0 {
+				log.Printf("  %s balance on %s: %v", network.Symbol.String, network.Name, balance.Total)
+			}
 
 			// Get native token info
 			var nativeToken types.NetworkToken
@@ -140,13 +139,11 @@ func (m *Monitor) checkBalances(ctx context.Context) {
 				continue
 			}
 
-			log.Printf("  Native token: %s (decimals=%d)", nativeToken.Symbol, nativeToken.Decimals)
-
 			// Process native token balance
 			m.processTokenBalance(account, network, nativeToken, balance, accountBalance,
 				portfolioTotalsByToken, portfolioChangesByToken, "native")
 
-			// Get all asset tokens for this network
+			// Check ALL asset tokens (remove the 5 asset limit)
 			rows, err := m.db.Query(`
 				SELECT id, symbol, decimals, token_id 
 				FROM network_tokens 
@@ -157,12 +154,12 @@ func (m *Monitor) checkBalances(ctx context.Context) {
 				func() {
 					defer rows.Close()
 
-					assetCount := 0
+					checkedAssets := 0
+					foundAssets := 0
 					for rows.Next() {
 						var assetToken types.NetworkToken
 						var tokenID sql.NullString
 						if err := rows.Scan(&assetToken.ID, &assetToken.Symbol, &assetToken.Decimals, &tokenID); err != nil {
-							log.Printf("    Failed to scan asset token: %v", err)
 							continue
 						}
 
@@ -170,34 +167,33 @@ func (m *Monitor) checkBalances(ctx context.Context) {
 							continue
 						}
 
-						assetCount++
-						if assetCount <= 5 { // Only check first 5 assets to avoid spam
-							// Get asset balance
-							assetBalance, err := m.networks.GetAssetBalance(network.Name, account.Address, tokenID.String)
-							if err != nil {
-								// Don't log for zero balances
-								continue
-							}
+						checkedAssets++
 
-							if assetBalance.Total == nil || assetBalance.Total.Cmp(big.NewInt(0)) == 0 {
-								continue
-							}
-
-							log.Printf("    Found asset balance: %s = %v", assetToken.Symbol, assetBalance.Total)
-
-							// Process asset balance
-							tokenType := "asset"
-							if strings.Contains(string(network.Name), "foreign") {
-								tokenType = "foreign_asset"
-							}
-
-							m.processTokenBalance(account, network, assetToken, assetBalance, accountBalance,
-								portfolioTotalsByToken, portfolioChangesByToken, tokenType)
+						// Get asset balance for ALL assets
+						assetBalance, err := m.networks.GetAssetBalance(network.Name, account.Address, tokenID.String)
+						if err != nil {
+							continue
 						}
+
+						if assetBalance.Total == nil || assetBalance.Total.Cmp(big.NewInt(0)) == 0 {
+							continue
+						}
+
+						foundAssets++
+						log.Printf("    Found %s balance: %v", assetToken.Symbol, assetBalance.Total)
+
+						// Process asset balance
+						tokenType := "asset"
+						if strings.Contains(string(network.Name), "foreign") {
+							tokenType = "foreign_asset"
+						}
+
+						m.processTokenBalance(account, network, assetToken, assetBalance, accountBalance,
+							portfolioTotalsByToken, portfolioChangesByToken, tokenType)
 					}
 
-					if assetCount > 5 {
-						log.Printf("    (Checked first 5 of %d assets)", assetCount)
+					if foundAssets > 0 {
+						log.Printf("    Found %d non-zero asset balances out of %d checked", foundAssets, checkedAssets)
 					}
 				}()
 			}
@@ -205,7 +201,6 @@ func (m *Monitor) checkBalances(ctx context.Context) {
 
 		accountBalances[account.ID] = accountBalance
 		processedAccounts++
-		log.Printf("Completed processing account %s", account.Name.String)
 	}
 
 	log.Printf("Processed %d accounts, generating summary...", processedAccounts)
@@ -213,8 +208,6 @@ func (m *Monitor) checkBalances(ctx context.Context) {
 	// Generate and send daily summary
 	if processedAccounts > 0 {
 		m.sendDailySummary(accountBalances, portfolioTotalsByToken, portfolioChangesByToken)
-	} else {
-		log.Println("No accounts processed, skipping summary")
 	}
 
 	log.Println("Balance check completed")
@@ -299,35 +292,35 @@ func (m *Monitor) processTokenBalance(account types.Account, network types.Netwo
 	// Store token balance info using discord.TokenBalance
 	tokenBal := &discord.TokenBalance{
 		Network:   network.Name,
-		Balance:   balance.Total,
+		Balance:   new(big.Int).Set(balance.Total), // Create copy
 		Symbol:    token.Symbol,
 		Decimals:  token.Decimals,
-		Change:    change,
+		Change:    new(big.Int).Set(change), // Create copy
 		TokenType: tokenType,
 	}
 	accountBalance.TokenBalances = append(accountBalance.TokenBalances, tokenBal)
 
-	// Update totals by token
+	// Update totals by token - properly accumulate
 	if accountBalance.TotalsByToken[token.Symbol] == nil {
 		accountBalance.TotalsByToken[token.Symbol] = big.NewInt(0)
 	}
-	accountBalance.TotalsByToken[token.Symbol] = new(big.Int).Add(accountBalance.TotalsByToken[token.Symbol], balance.Total)
+	accountBalance.TotalsByToken[token.Symbol].Add(accountBalance.TotalsByToken[token.Symbol], balance.Total)
 
 	if accountBalance.ChangesByToken[token.Symbol] == nil {
 		accountBalance.ChangesByToken[token.Symbol] = big.NewInt(0)
 	}
-	accountBalance.ChangesByToken[token.Symbol] = new(big.Int).Add(accountBalance.ChangesByToken[token.Symbol], change)
+	accountBalance.ChangesByToken[token.Symbol].Add(accountBalance.ChangesByToken[token.Symbol], change)
 
-	// Update portfolio totals
+	// Update portfolio totals - properly accumulate
 	if portfolioTotalsByToken[token.Symbol] == nil {
 		portfolioTotalsByToken[token.Symbol] = big.NewInt(0)
 	}
-	portfolioTotalsByToken[token.Symbol] = new(big.Int).Add(portfolioTotalsByToken[token.Symbol], balance.Total)
+	portfolioTotalsByToken[token.Symbol].Add(portfolioTotalsByToken[token.Symbol], balance.Total)
 
 	if portfolioChangesByToken[token.Symbol] == nil {
 		portfolioChangesByToken[token.Symbol] = big.NewInt(0)
 	}
-	portfolioChangesByToken[token.Symbol] = new(big.Int).Add(portfolioChangesByToken[token.Symbol], change)
+	portfolioChangesByToken[token.Symbol].Add(portfolioChangesByToken[token.Symbol], change)
 
 	// Update database
 	if balanceExists {
@@ -377,8 +370,6 @@ func (m *Monitor) processTokenBalance(account types.Account, network types.Netwo
 
 		if changeValue >= m.config.MinBalanceChangeNotification && account.DiscordNotify {
 			if m.discord != nil {
-				log.Printf("Sending balance change notification: %s %s by %.4f %s",
-					account.Address, changeType, changeValue, token.Symbol)
 				err := m.discord.SendBalanceChangeNotification(
 					account.Address, network.Name, token.Symbol,
 					previousBalance.Total, balance.Total, changeType)
@@ -395,6 +386,11 @@ func (m *Monitor) sendDailySummary(accountBalances map[uint]*AccountBalance,
 	portfolioChangesByToken map[string]*big.Int) {
 
 	log.Println("Preparing daily summary...")
+
+	// Debug: Print portfolio totals
+	for symbol, total := range portfolioTotalsByToken {
+		log.Printf("Portfolio total for %s: %v", symbol, total)
+	}
 
 	if m.discord == nil {
 		log.Println("Discord client is nil, cannot send summary")
@@ -436,9 +432,9 @@ func (m *Monitor) sendDailySummary(accountBalances map[uint]*AccountBalance,
 	}
 	summary.ActiveNetworks = len(networksUsed)
 
-	// Build token totals
+	// Build token totals with proper values
 	for symbol, total := range portfolioTotalsByToken {
-		if total == nil || total.Cmp(big.NewInt(0)) == 0 {
+		if total == nil {
 			continue
 		}
 
@@ -452,12 +448,18 @@ func (m *Monitor) sendDailySummary(accountBalances map[uint]*AccountBalance,
 			decimals = 10
 		}
 
+		// Create copies of the big.Int values
+		totalCopy := new(big.Int).Set(total)
+		changeCopy := new(big.Int).Set(change)
+
 		summary.TotalsByToken[symbol] = &discord.TokenTotal{
 			Symbol:   symbol,
-			Total:    total,
-			Change:   change,
+			Total:    totalCopy,
+			Change:   changeCopy,
 			Decimals: decimals,
 		}
+
+		log.Printf("Added to summary - %s: total=%v, change=%v", symbol, totalCopy, changeCopy)
 	}
 
 	// Build account summaries
@@ -467,12 +469,27 @@ func (m *Monitor) sendDailySummary(accountBalances map[uint]*AccountBalance,
 			accountName = "Unknown"
 		}
 
+		// Create copies of the maps
+		totalsCopy := make(map[string]*big.Int)
+		for k, v := range ab.TotalsByToken {
+			if v != nil {
+				totalsCopy[k] = new(big.Int).Set(v)
+			}
+		}
+
+		changesCopy := make(map[string]*big.Int)
+		for k, v := range ab.ChangesByToken {
+			if v != nil {
+				changesCopy[k] = new(big.Int).Set(v)
+			}
+		}
+
 		summary.AccountSummaries = append(summary.AccountSummaries, discord.AccountSummary{
 			Name:           accountName,
 			Address:        ab.Account.Address,
 			TokenBalances:  ab.TokenBalances,
-			TotalsByToken:  ab.TotalsByToken,
-			ChangesByToken: ab.ChangesByToken,
+			TotalsByToken:  totalsCopy,
+			ChangesByToken: changesCopy,
 		})
 	}
 

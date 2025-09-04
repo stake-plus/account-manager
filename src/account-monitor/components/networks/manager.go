@@ -2,9 +2,11 @@ package networks
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"math/big"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -133,9 +135,12 @@ func (m *Manager) DiscoverNetworks(ctx context.Context) error {
 
 			if hasPallet {
 				log.Printf("  ✔ Found pallet: %s", palletName)
-				// Special handling for Assets pallet
-				if palletName == "Assets" {
-					m.discoverAssets(api, network.ID)
+				// Special handling for Assets and ForeignAssets pallets
+				switch palletName {
+				case "Assets":
+					m.discoverAssets(api, network.ID, "Assets")
+				case "ForeignAssets":
+					m.discoverAssets(api, network.ID, "ForeignAssets")
 				}
 			}
 		}
@@ -144,12 +149,175 @@ func (m *Manager) DiscoverNetworks(ctx context.Context) error {
 	return nil
 }
 
-func (m *Manager) discoverAssets(api *gsrpc.SubstrateAPI, networkID uint) {
-	// This would query the Assets pallet for all available assets
-	// and store them in the network_tokens table
-	log.Printf("    Discovering assets for network ID %d", networkID)
-	// Implementation would involve querying Assets.Asset storage
-	// and iterating through all asset IDs
+func (m *Manager) discoverAssets(api *gsrpc.SubstrateAPI, networkID uint, palletName string) {
+	log.Printf("    Discovering %s for network ID %d", palletName, networkID)
+
+	// Get metadata
+	meta, err := api.RPC.State.GetMetadataLatest()
+	if err != nil {
+		log.Printf("Failed to get metadata for asset discovery: %v", err)
+		return
+	}
+
+	// Query Assets.Asset or ForeignAssets.Asset storage
+	storageKey, err := gstypes.CreateStorageKey(meta, palletName, "Asset")
+	if err != nil {
+		log.Printf("Failed to create storage key for %s: %v", palletName, err)
+		return
+	}
+
+	// Get all keys with this prefix
+	keys, err := api.RPC.State.GetKeysLatest(storageKey)
+	if err != nil {
+		log.Printf("Failed to get asset keys: %v", err)
+		return
+	}
+
+	log.Printf("    Found %d assets in %s", len(keys), palletName)
+
+	tokenType := "asset"
+	if palletName == "ForeignAssets" {
+		tokenType = "foreign_asset"
+	}
+
+	// Process each asset
+	for _, key := range keys {
+		// Extract asset ID from key (last part after hashing)
+		// This is simplified - actual implementation would decode properly
+
+		// Query asset metadata
+		var assetInfo struct {
+			Name     []byte
+			Symbol   []byte
+			Decimals uint8
+		}
+
+		ok, err := api.RPC.State.GetStorageLatest(key, &assetInfo)
+		if err != nil || !ok {
+			continue
+		}
+
+		symbol := string(assetInfo.Symbol)
+		if symbol == "" {
+			continue
+		}
+
+		// Store in database
+		_, err = m.db.Exec(`
+			INSERT INTO network_tokens 
+			(network_id, token_type, token_id, symbol, name, decimals, pallet_name, active)
+			VALUES (?, ?, ?, ?, ?, ?, ?, TRUE)
+			ON DUPLICATE KEY UPDATE
+			symbol = VALUES(symbol),
+			name = VALUES(name),
+			decimals = VALUES(decimals),
+			active = TRUE
+		`, networkID, tokenType, fmt.Sprintf("%x", key), symbol, string(assetInfo.Name),
+			assetInfo.Decimals, palletName)
+
+		if err == nil {
+			log.Printf("      Added %s: %s (%d decimals)", tokenType, symbol, assetInfo.Decimals)
+		}
+	}
+}
+
+// GetAssetBalance gets balance for a specific asset token
+func (m *Manager) GetAssetBalance(networkName, address, assetID string) (types.Balance, error) {
+	api, err := m.getClient(networkName)
+	if err != nil {
+		return types.Balance{}, err
+	}
+
+	// Get metadata
+	meta, err := api.RPC.State.GetMetadataLatest()
+	if err != nil {
+		return types.Balance{}, err
+	}
+
+	// Decode address to AccountID
+	var accountID gstypes.AccountID
+	if strings.HasPrefix(address, "0x") {
+		err = codec.DecodeFromHex(address, &accountID)
+	} else {
+		accountID, err = decodeSS58Address(address)
+	}
+	if err != nil {
+		return types.Balance{}, err
+	}
+
+	// Convert assetID string to proper format
+	// Asset IDs can be numeric or hex encoded
+	var assetIDBytes []byte
+	if strings.HasPrefix(assetID, "0x") {
+		// Hex encoded
+		assetIDBytes, err = codec.HexDecodeString(assetID)
+		if err != nil {
+			return types.Balance{}, fmt.Errorf("failed to decode asset ID: %w", err)
+		}
+	} else {
+		// Try as numeric ID (u32 or u128)
+		// For now, assume u32
+		assetIDNum, err := strconv.ParseUint(assetID, 10, 32)
+		if err != nil {
+			return types.Balance{}, fmt.Errorf("failed to parse asset ID: %w", err)
+		}
+		assetIDBytes = make([]byte, 4)
+		binary.LittleEndian.PutUint32(assetIDBytes, uint32(assetIDNum))
+	}
+
+	// Try Assets pallet first
+	key, err := gstypes.CreateStorageKey(meta, "Assets", "Account", assetIDBytes, accountID[:])
+	if err == nil {
+		var assetBalance struct {
+			Balance  gstypes.U128
+			IsFrozen bool
+			Reason   []byte
+		}
+
+		ok, err := api.RPC.State.GetStorageLatest(key, &assetBalance)
+		if err == nil && ok {
+			return types.Balance{
+				Free:       assetBalance.Balance.Int,
+				Reserved:   big.NewInt(0),
+				MiscFrozen: big.NewInt(0),
+				FeeFrozen:  big.NewInt(0),
+				Bonded:     big.NewInt(0),
+				Total:      assetBalance.Balance.Int,
+			}, nil
+		}
+	}
+
+	// Try ForeignAssets pallet
+	key, err = gstypes.CreateStorageKey(meta, "ForeignAssets", "Account", assetIDBytes, accountID[:])
+	if err == nil {
+		var assetBalance struct {
+			Balance  gstypes.U128
+			IsFrozen bool
+			Reason   []byte
+		}
+
+		ok, err := api.RPC.State.GetStorageLatest(key, &assetBalance)
+		if err == nil && ok {
+			return types.Balance{
+				Free:       assetBalance.Balance.Int,
+				Reserved:   big.NewInt(0),
+				MiscFrozen: big.NewInt(0),
+				FeeFrozen:  big.NewInt(0),
+				Bonded:     big.NewInt(0),
+				Total:      assetBalance.Balance.Int,
+			}, nil
+		}
+	}
+
+	// Return zero balance if not found
+	return types.Balance{
+		Free:       big.NewInt(0),
+		Reserved:   big.NewInt(0),
+		MiscFrozen: big.NewInt(0),
+		FeeFrozen:  big.NewInt(0),
+		Bonded:     big.NewInt(0),
+		Total:      big.NewInt(0),
+	}, nil
 }
 
 // decodeSS58Address decodes an SS58 address to AccountID

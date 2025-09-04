@@ -12,7 +12,7 @@ import (
 	"github.com/stake-plus/account-manager/src/account-monitor/components/config"
 	"github.com/stake-plus/account-manager/src/account-monitor/components/database"
 	"github.com/stake-plus/account-manager/src/account-monitor/components/discord"
-	"github.com/stake-plus/account-manager/src/account-monitor/components/monitor"
+	monitor "github.com/stake-plus/account-manager/src/account-monitor/components/monitor"
 	"github.com/stake-plus/account-manager/src/account-monitor/components/networks"
 )
 

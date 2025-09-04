@@ -7,6 +7,7 @@ import (
 	"log"
 	"math/big"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -82,58 +83,21 @@ func (c *Client) SendBalanceChangeNotification(account, network, token string, b
 		return nil
 	}
 
-	color := 0x00ff00 // Green for increase
 	emoji := "📈"
-
 	if changeType == "decrease" {
-		color = 0xff0000 // Red for decrease
 		emoji = "📉"
 	}
 
 	change := new(big.Int).Sub(after, before)
 
-	embed := Embed{
-		Title: fmt.Sprintf("%s Balance Change Alert", emoji),
-		Color: color,
-		Fields: []EmbedField{
-			{
-				Name:   "Account",
-				Value:  formatAddress(account),
-				Inline: false,
-			},
-			{
-				Name:   "Network",
-				Value:  network,
-				Inline: true,
-			},
-			{
-				Name:   "Token",
-				Value:  token,
-				Inline: true,
-			},
-			{
-				Name:   "Change",
-				Value:  formatBalance(change, token),
-				Inline: true,
-			},
-			{
-				Name:   "Before",
-				Value:  formatBalance(before, token),
-				Inline: true,
-			},
-			{
-				Name:   "After",
-				Value:  formatBalance(after, token),
-				Inline: true,
-			},
-		},
-		Timestamp: time.Now().Format(time.RFC3339),
-		Footer: &EmbedFooter{
-			Text: "Account Monitor",
-		},
-	}
+	msg := fmt.Sprintf("**%s Balance Change Alert**\n", emoji)
+	msg += fmt.Sprintf("Account: `%s`\n", formatAddress(account))
+	msg += fmt.Sprintf("Network: %s | Token: %s\n", network, token)
+	msg += fmt.Sprintf("Change: %s\n", formatBalance(change, token))
+	msg += fmt.Sprintf("Before: %s → After: %s",
+		formatBalance(before, token), formatBalance(after, token))
 
-	return c.sendEmbed(embed, true)
+	return c.sendMessage(msg, true)
 }
 
 func (c *Client) SendChildBountyAlert(account, network string, bountyID, childBountyID uint64, amount *big.Int, token string) error {
@@ -141,48 +105,14 @@ func (c *Client) SendChildBountyAlert(account, network string, bountyID, childBo
 		return nil
 	}
 
-	embed := Embed{
-		Title: "🎁 Child Bounty Ready to Claim!",
-		Color: 0x00ff00,
-		Fields: []EmbedField{
-			{
-				Name:   "Beneficiary",
-				Value:  formatAddress(account),
-				Inline: false,
-			},
-			{
-				Name:   "Network",
-				Value:  network,
-				Inline: true,
-			},
-			{
-				Name:   "Parent Bounty",
-				Value:  fmt.Sprintf("#%d", bountyID),
-				Inline: true,
-			},
-			{
-				Name:   "Child Bounty",
-				Value:  fmt.Sprintf("#%d", childBountyID),
-				Inline: true,
-			},
-			{
-				Name:   "Amount",
-				Value:  formatBalance(amount, token),
-				Inline: true,
-			},
-			{
-				Name:   "Status",
-				Value:  "✅ Ready to claim",
-				Inline: true,
-			},
-		},
-		Timestamp: time.Now().Format(time.RFC3339),
-		Footer: &EmbedFooter{
-			Text: "Account Monitor - Child Bounty Alert",
-		},
-	}
+	msg := fmt.Sprintf("**🎁 Child Bounty Ready to Claim!**\n")
+	msg += fmt.Sprintf("Beneficiary: `%s`\n", formatAddress(account))
+	msg += fmt.Sprintf("Network: %s | Token: %s\n", network, token)
+	msg += fmt.Sprintf("Parent Bounty: #%d | Child Bounty: #%d\n", bountyID, childBountyID)
+	msg += fmt.Sprintf("Amount: %s\n", formatBalance(amount, token))
+	msg += fmt.Sprintf("Status: ✅ Ready to claim")
 
-	return c.sendEmbed(embed, true)
+	return c.sendMessage(msg, true)
 }
 
 func (c *Client) SendDailySummary(summary DailySummary) error {
@@ -190,116 +120,74 @@ func (c *Client) SendDailySummary(summary DailySummary) error {
 		return nil
 	}
 
-	// Determine color based on overall change
-	color := 0x0099ff // Blue default
-	hasProfit := false
-	hasLoss := false
+	var msg strings.Builder
 
-	for _, tokenTotal := range summary.TotalsByToken {
-		if tokenTotal.Change.Cmp(big.NewInt(0)) > 0 {
-			hasProfit = true
-		} else if tokenTotal.Change.Cmp(big.NewInt(0)) < 0 {
-			hasLoss = true
-		}
-	}
+	msg.WriteString(fmt.Sprintf("**📊 Daily Portfolio Summary - %s**\n", time.Now().Format("2006-01-02")))
+	msg.WriteString("```\n")
+	msg.WriteString(fmt.Sprintf("Active Accounts: %d | Active Networks: %d\n",
+		summary.TotalAccounts, summary.ActiveNetworks))
+	msg.WriteString("─────────────────────────────────────────\n")
 
-	if hasProfit && !hasLoss {
-		color = 0x00ff00 // Green for profit
-	} else if hasLoss && !hasProfit {
-		color = 0xff0000 // Red for loss
-	}
-
-	embed := Embed{
-		Title:       "📊 Daily Portfolio Summary",
-		Description: fmt.Sprintf("Date: %s", time.Now().Format("2006-01-02")),
-		Color:       color,
-		Fields: []EmbedField{
-			{
-				Name:   "🔍 Active Accounts",
-				Value:  fmt.Sprintf("%d", summary.TotalAccounts),
-				Inline: true,
-			},
-			{
-				Name:   "🌐 Active Networks",
-				Value:  fmt.Sprintf("%d", summary.ActiveNetworks),
-				Inline: true,
-			},
-		},
-		Timestamp: time.Now().Format(time.RFC3339),
-		Footer: &EmbedFooter{
-			Text: "Account Monitor - Daily Summary",
-		},
-	}
-
-	// Add portfolio totals by token
+	// Portfolio totals by token
 	if len(summary.TotalsByToken) > 0 {
-		embed.Fields = append(embed.Fields, EmbedField{
-			Name:   "────────────────────",
-			Value:  "**Portfolio Totals by Token**",
-			Inline: false,
-		})
-
+		msg.WriteString("PORTFOLIO TOTALS BY TOKEN\n\n")
 		for symbol, tokenTotal := range summary.TotalsByToken {
-			embed.Fields = append(embed.Fields, EmbedField{
-				Name: fmt.Sprintf("💰 %s", symbol),
-				Value: fmt.Sprintf("Total: %s\nChange: %s",
-					formatTokenAmount(tokenTotal.Total, tokenTotal.Decimals, symbol),
-					formatTokenAmount(tokenTotal.Change, tokenTotal.Decimals, symbol)),
-				Inline: true,
-			})
+			totalStr := formatTokenAmount(tokenTotal.Total, tokenTotal.Decimals, "")
+			changeStr := formatTokenAmount(tokenTotal.Change, tokenTotal.Decimals, "")
+			msg.WriteString(fmt.Sprintf("%-10s  Total: %15s  Change: %15s\n",
+				symbol, totalStr, changeStr))
 		}
+		msg.WriteString("─────────────────────────────────────────\n")
 	}
 
-	// Add account details
+	// Account details
 	if len(summary.AccountSummaries) > 0 {
-		embed.Fields = append(embed.Fields, EmbedField{
-			Name:   "────────────────────",
-			Value:  "**Account Details**",
-			Inline: false,
-		})
-
+		msg.WriteString("ACCOUNT DETAILS\n\n")
 		for _, account := range summary.AccountSummaries {
-			embed.Fields = append(embed.Fields, EmbedField{
-				Name:   fmt.Sprintf("💼 %s", account.Name),
-				Value:  account.Summary,
-				Inline: false,
-			})
+			msg.WriteString(fmt.Sprintf("%s (%s)\n", account.Name, formatAddress(account.Address)))
+
+			// Group balances by token
+			tokenGroups := make(map[string][]*TokenBalance)
+			for _, tb := range account.TokenBalances {
+				if tb.Balance.Cmp(big.NewInt(0)) > 0 {
+					tokenGroups[tb.Symbol] = append(tokenGroups[tb.Symbol], tb)
+				}
+			}
+
+			// Display each token with its networks
+			for symbol, balances := range tokenGroups {
+				total := account.TotalsByToken[symbol]
+				change := account.ChangesByToken[symbol]
+
+				decimals := summary.TokenDecimals[symbol]
+				if decimals == 0 {
+					decimals = 10
+				}
+
+				totalStr := formatTokenAmount(total, decimals, "")
+				changeStr := formatTokenAmount(change, decimals, "")
+
+				msg.WriteString(fmt.Sprintf("  %-8s Total: %12s  Change: %12s\n",
+					symbol+":", totalStr, changeStr))
+
+				// Show network breakdown
+				for _, bal := range balances {
+					balStr := formatTokenAmount(bal.Balance, bal.Decimals, "")
+					msg.WriteString(fmt.Sprintf("    %-12s %12s", bal.Network+":", balStr))
+					if bal.Change.Cmp(big.NewInt(0)) != 0 {
+						changeStr := formatTokenAmount(bal.Change, bal.Decimals, "")
+						msg.WriteString(fmt.Sprintf(" (%s)", changeStr))
+					}
+					msg.WriteString("\n")
+				}
+			}
+			msg.WriteString("\n")
 		}
 	}
 
-	// Add revenue breakdown if any
-	hasRevenue := false
-	revenueBreakdown := "────────────────────\n**Revenue Breakdown**\n"
+	msg.WriteString("```")
 
-	if summary.ChildBountyRevenue != nil && summary.ChildBountyRevenue.Cmp(big.NewInt(0)) > 0 {
-		revenueBreakdown += fmt.Sprintf("🎁 Child Bounties: %s\n", formatBalance(summary.ChildBountyRevenue, ""))
-		hasRevenue = true
-	}
-
-	if summary.ValidatorRevenue != nil && summary.ValidatorRevenue.Cmp(big.NewInt(0)) > 0 {
-		revenueBreakdown += fmt.Sprintf("⚡ Validator Rewards: %s\n", formatBalance(summary.ValidatorRevenue, ""))
-		hasRevenue = true
-	}
-
-	if summary.CollatorRevenue != nil && summary.CollatorRevenue.Cmp(big.NewInt(0)) > 0 {
-		revenueBreakdown += fmt.Sprintf("🔗 Collator Rewards: %s\n", formatBalance(summary.CollatorRevenue, ""))
-		hasRevenue = true
-	}
-
-	if summary.StakingRevenue != nil && summary.StakingRevenue.Cmp(big.NewInt(0)) > 0 {
-		revenueBreakdown += fmt.Sprintf("📈 Staking Rewards: %s\n", formatBalance(summary.StakingRevenue, ""))
-		hasRevenue = true
-	}
-
-	if hasRevenue {
-		embed.Fields = append(embed.Fields, EmbedField{
-			Name:   "💵 Revenue Sources",
-			Value:  revenueBreakdown,
-			Inline: false,
-		})
-	}
-
-	return c.sendEmbed(embed, false)
+	return c.sendMessage(msg.String(), false)
 }
 
 func (c *Client) SendValidatorAlert(address, network string, alert ValidatorAlert) error {
@@ -307,77 +195,47 @@ func (c *Client) SendValidatorAlert(address, network string, alert ValidatorAler
 		return nil
 	}
 
-	color := 0x0099ff // Blue for info
+	icon := "⚡"
 	switch alert.Type {
 	case "unclaimed_rewards":
-		color = 0xffaa00 // Orange for warning
+		icon = "⚠️"
 	case "slash":
-		color = 0xff0000 // Red for slash
+		icon = "🚨"
 	}
 
-	embed := Embed{
-		Title:       fmt.Sprintf("⚡ Validator Alert: %s", alert.Type),
-		Description: alert.Message,
-		Color:       color,
-		Fields: []EmbedField{
-			{
-				Name:   "Validator",
-				Value:  formatAddress(address),
-				Inline: false,
-			},
-			{
-				Name:   "Network",
-				Value:  network,
-				Inline: true,
-			},
-		},
-		Timestamp: time.Now().Format(time.RFC3339),
-		Footer: &EmbedFooter{
-			Text: "Account Monitor - Validator Alert",
-		},
-	}
+	msg := fmt.Sprintf("**%s Validator Alert: %s**\n", icon, alert.Type)
+	msg += fmt.Sprintf("Validator: `%s`\n", formatAddress(address))
+	msg += fmt.Sprintf("Network: %s\n", network)
+	msg += fmt.Sprintf("%s\n", alert.Message)
 
-	// Add details based on alert type
 	if len(alert.UnclaimedEras) > 0 {
-		embed.Fields = append(embed.Fields, EmbedField{
-			Name:   "Unclaimed Eras",
-			Value:  fmt.Sprintf("%v", alert.UnclaimedEras),
-			Inline: false,
-		})
+		msg += fmt.Sprintf("Unclaimed Eras: %v\n", alert.UnclaimedEras)
 	}
 
 	if alert.UnclaimedAmount != nil {
-		embed.Fields = append(embed.Fields, EmbedField{
-			Name:   "Claimable Amount",
-			Value:  formatBalance(alert.UnclaimedAmount, ""),
-			Inline: true,
-		})
+		msg += fmt.Sprintf("Claimable: %s\n", formatBalance(alert.UnclaimedAmount, ""))
 	}
 
 	if alert.ExpiredAmount != nil {
-		embed.Fields = append(embed.Fields, EmbedField{
-			Name:   "Expired Amount",
-			Value:  formatBalance(alert.ExpiredAmount, ""),
-			Inline: true,
-		})
+		msg += fmt.Sprintf("Expired: %s\n", formatBalance(alert.ExpiredAmount, ""))
 	}
 
-	return c.sendEmbed(embed, true)
+	return c.sendMessage(msg, true)
 }
 
-func (c *Client) sendEmbed(embed Embed, isAlert bool) error {
+func (c *Client) sendMessage(content string, isAlert bool) error {
 	if c == nil {
 		return nil
 	}
 
 	if c.isBot {
-		return c.sendBotMessage(embed, isAlert)
+		return c.sendBotMessage(content, isAlert)
 	}
 
-	return c.sendWebhookMessage(embed)
+	return c.sendWebhookMessage(content)
 }
 
-func (c *Client) sendBotMessage(embed Embed, isAlert bool) error {
+func (c *Client) sendBotMessage(content string, isAlert bool) error {
 	if c.session == nil {
 		return fmt.Errorf("bot session not initialized")
 	}
@@ -391,28 +249,7 @@ func (c *Client) sendBotMessage(embed Embed, isAlert bool) error {
 		return fmt.Errorf("no channel ID configured")
 	}
 
-	discordEmbed := &discordgo.MessageEmbed{
-		Title:       embed.Title,
-		Description: embed.Description,
-		Color:       embed.Color,
-		Timestamp:   embed.Timestamp,
-	}
-
-	if embed.Footer != nil {
-		discordEmbed.Footer = &discordgo.MessageEmbedFooter{
-			Text: embed.Footer.Text,
-		}
-	}
-
-	for _, field := range embed.Fields {
-		discordEmbed.Fields = append(discordEmbed.Fields, &discordgo.MessageEmbedField{
-			Name:   field.Name,
-			Value:  field.Value,
-			Inline: field.Inline,
-		})
-	}
-
-	_, err := c.session.ChannelMessageSendEmbed(channelID, discordEmbed)
+	_, err := c.session.ChannelMessageSend(channelID, content)
 	if err != nil {
 		log.Printf("Failed to send Discord bot message: %v", err)
 		return err
@@ -421,13 +258,13 @@ func (c *Client) sendBotMessage(embed Embed, isAlert bool) error {
 	return nil
 }
 
-func (c *Client) sendWebhookMessage(embed Embed) error {
+func (c *Client) sendWebhookMessage(content string) error {
 	if c.webhookURL == "" {
 		return nil
 	}
 
-	msg := WebhookMessage{
-		Embeds: []Embed{embed},
+	msg := map[string]string{
+		"content": content,
 	}
 
 	jsonData, err := json.Marshal(msg)
@@ -467,12 +304,10 @@ func formatBalance(amount *big.Int, token string) string {
 	result := new(big.Float).Quo(fAmount, divisor)
 
 	// Format with sign for changes
-	formatted := ""
 	val, _ := result.Float64()
-	if val >= 0 {
-		formatted = fmt.Sprintf("+%.4f", val)
-	} else {
-		formatted = fmt.Sprintf("%.4f", val)
+	formatted := fmt.Sprintf("%.4f", val)
+	if val >= 0 && amount.Cmp(big.NewInt(0)) > 0 {
+		formatted = "+" + formatted
 	}
 
 	if token != "" {
@@ -484,7 +319,7 @@ func formatBalance(amount *big.Int, token string) string {
 
 func formatTokenAmount(amount *big.Int, decimals uint8, symbol string) string {
 	if amount == nil {
-		return "0 " + symbol
+		return "0"
 	}
 
 	// Convert to float for formatting
@@ -492,12 +327,17 @@ func formatTokenAmount(amount *big.Int, decimals uint8, symbol string) string {
 	divisor := new(big.Float).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil))
 	result := new(big.Float).Quo(fAmount, divisor)
 
-	// Format with sign for changes
 	val, _ := result.Float64()
-	if val >= 0 {
-		return fmt.Sprintf("+%.4f %s", val, symbol)
+	formatted := fmt.Sprintf("%.4f", val)
+	if val > 0 && amount.Cmp(big.NewInt(0)) > 0 {
+		formatted = "+" + formatted
 	}
-	return fmt.Sprintf("%.4f %s", val, symbol)
+
+	if symbol != "" {
+		formatted += " " + symbol
+	}
+
+	return formatted
 }
 
 func formatAddress(address string) string {
@@ -505,6 +345,15 @@ func formatAddress(address string) string {
 		return address
 	}
 	return fmt.Sprintf("%s...%s", address[:6], address[len(address)-6:])
+}
+
+type TokenBalance struct {
+	Network   string
+	Balance   *big.Int
+	Symbol    string
+	Decimals  uint8
+	Change    *big.Int
+	TokenType string
 }
 
 type TokenTotal struct {
@@ -519,6 +368,7 @@ type DailySummary struct {
 	ActiveNetworks     int
 	TotalChanges       int
 	TotalsByToken      map[string]*TokenTotal
+	TokenDecimals      map[string]uint8
 	ChildBountyRevenue *big.Int
 	ValidatorRevenue   *big.Int
 	CollatorRevenue    *big.Int
@@ -527,9 +377,12 @@ type DailySummary struct {
 }
 
 type AccountSummary struct {
-	Name    string
-	Address string
-	Summary string
+	Name           string
+	Address        string
+	Summary        string
+	TokenBalances  []*TokenBalance
+	TotalsByToken  map[string]*big.Int
+	ChangesByToken map[string]*big.Int
 }
 
 type ValidatorAlert struct {

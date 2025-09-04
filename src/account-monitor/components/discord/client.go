@@ -348,20 +348,13 @@ func formatTokenAmountPrecise(amount *big.Int, decimals uint8, symbol string) st
 	whole := new(big.Int).Div(amount, divisor)
 	remainder := new(big.Int).Mod(amount, divisor)
 
-	// Format remainder with leading zeros
-	fracStr := fmt.Sprintf("%0*d", decimals, remainder)
+	// Scale the remainder to get 4 decimal places
+	// We need to multiply remainder by 10000 and divide by divisor
+	scaledRemainder := new(big.Int).Mul(remainder, big.NewInt(10000))
+	fracPart := new(big.Int).Div(scaledRemainder, divisor)
 
-	// Truncate to 4 decimal places
-	if len(fracStr) > 4 {
-		fracStr = fracStr[:4]
-	} else {
-		// Pad with zeros if needed
-		for len(fracStr) < 4 {
-			fracStr += "0"
-		}
-	}
-
-	formatted := fmt.Sprintf("%s.%s", whole.String(), fracStr)
+	// Format with exactly 4 decimal places
+	formatted := fmt.Sprintf("%s.%04d", whole.String(), fracPart.Int64())
 
 	if symbol != "" {
 		formatted += " " + symbol

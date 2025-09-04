@@ -134,8 +134,8 @@ func (c *Client) SendDailySummary(summary DailySummary) error {
 			if tokenTotal.Total == nil || tokenTotal.Total.Cmp(big.NewInt(0)) == 0 {
 				continue
 			}
-			totalStr := formatTokenAmount(tokenTotal.Total, tokenTotal.Decimals, "")
-			changeStr := formatTokenAmount(tokenTotal.Change, tokenTotal.Decimals, "")
+			totalStr := formatTokenAmountPrecise(tokenTotal.Total, tokenTotal.Decimals, "")
+			changeStr := formatTokenAmountPrecise(tokenTotal.Change, tokenTotal.Decimals, "")
 			msg.WriteString(fmt.Sprintf("%-10s  Total: %15s  Change: %15s\n",
 				symbol, totalStr, changeStr))
 		}
@@ -165,17 +165,17 @@ func (c *Client) SendDailySummary(summary DailySummary) error {
 					decimals = 10
 				}
 
-				totalStr := formatTokenAmount(total, decimals, "")
-				changeStr := formatTokenAmount(change, decimals, "")
+				totalStr := formatTokenAmountPrecise(total, decimals, "")
+				changeStr := formatTokenAmountPrecise(change, decimals, "")
 				msg.WriteString(fmt.Sprintf("  %-8s Total: %12s  Change: %12s\n",
 					symbol+":", totalStr, changeStr))
 
 				// Show network breakdown
 				for _, bal := range balances {
-					balStr := formatTokenAmount(bal.Balance, bal.Decimals, "")
+					balStr := formatTokenAmountPrecise(bal.Balance, bal.Decimals, "")
 					msg.WriteString(fmt.Sprintf("    %-20s %12s", bal.Network+":", balStr))
 					if bal.Change != nil && bal.Change.Cmp(big.NewInt(0)) != 0 {
-						changeStr := formatTokenAmount(bal.Change, bal.Decimals, "")
+						changeStr := formatTokenAmountPrecise(bal.Change, bal.Decimals, "")
 						msg.WriteString(fmt.Sprintf(" (%s)", changeStr))
 					}
 					msg.WriteString("\n")
@@ -328,7 +328,41 @@ func formatTokenAmount(amount *big.Int, decimals uint8, symbol string) string {
 	val, _ := result.Float64()
 	formatted := fmt.Sprintf("%.4f", val)
 
-	// Don't add + for display in summary
+	if symbol != "" {
+		formatted += " " + symbol
+	}
+
+	return formatted
+}
+
+// Use string-based arithmetic to avoid float precision issues
+func formatTokenAmountPrecise(amount *big.Int, decimals uint8, symbol string) string {
+	if amount == nil || amount.Cmp(big.NewInt(0)) == 0 {
+		return "0.0000"
+	}
+
+	// Get divisor
+	divisor := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil)
+
+	// Get whole and fractional parts
+	whole := new(big.Int).Div(amount, divisor)
+	remainder := new(big.Int).Mod(amount, divisor)
+
+	// Format remainder with leading zeros
+	fracStr := fmt.Sprintf("%0*d", decimals, remainder)
+
+	// Truncate to 4 decimal places
+	if len(fracStr) > 4 {
+		fracStr = fracStr[:4]
+	} else {
+		// Pad with zeros if needed
+		for len(fracStr) < 4 {
+			fracStr += "0"
+		}
+	}
+
+	formatted := fmt.Sprintf("%s.%s", whole.String(), fracStr)
+
 	if symbol != "" {
 		formatted += " " + symbol
 	}

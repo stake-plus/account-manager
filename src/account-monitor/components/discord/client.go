@@ -132,17 +132,12 @@ func (c *Client) SendDailySummary(summary DailySummary) error {
 		msg.WriteString("PORTFOLIO TOTALS BY TOKEN\n\n")
 		for symbol, tokenTotal := range summary.TotalsByToken {
 			if tokenTotal.Total == nil || tokenTotal.Total.Cmp(big.NewInt(0)) == 0 {
-				log.Printf("Skipping zero token total for %s", symbol)
 				continue
 			}
 
-			log.Printf("Formatting portfolio total for %s: value=%v, decimals=%d",
-				symbol, tokenTotal.Total, tokenTotal.Decimals)
-
-			totalStr := formatTokenAmountPrecise(tokenTotal.Total, tokenTotal.Decimals, "")
-			changeStr := formatTokenAmountPrecise(tokenTotal.Change, tokenTotal.Decimals, "")
-
-			log.Printf("Formatted %s: total='%s', change='%s'", symbol, totalStr, changeStr)
+			// Use the decimals from the TokenTotal struct, not the map
+			totalStr := formatTokenAmountSimple(tokenTotal.Total, tokenTotal.Decimals)
+			changeStr := formatTokenAmountSimple(tokenTotal.Change, tokenTotal.Decimals)
 
 			msg.WriteString(fmt.Sprintf("%-10s  Total: %15s  Change: %15s\n",
 				symbol, totalStr, changeStr))
@@ -168,26 +163,25 @@ func (c *Client) SendDailySummary(summary DailySummary) error {
 			for symbol, balances := range tokenGroups {
 				total := account.TotalsByToken[symbol]
 				change := account.ChangesByToken[symbol]
-				decimals := summary.TokenDecimals[symbol]
-				if decimals == 0 {
-					decimals = 10
+
+				// Get decimals from first balance in group (all same token should have same decimals)
+				decimals := uint8(10)
+				if len(balances) > 0 {
+					decimals = balances[0].Decimals
 				}
 
-				log.Printf("Formatting account %s %s total: value=%v, decimals=%d",
-					account.Name, symbol, total, decimals)
-
-				totalStr := formatTokenAmountPrecise(total, decimals, "")
-				changeStr := formatTokenAmountPrecise(change, decimals, "")
+				totalStr := formatTokenAmountSimple(total, decimals)
+				changeStr := formatTokenAmountSimple(change, decimals)
 
 				msg.WriteString(fmt.Sprintf("  %-8s Total: %12s  Change: %12s\n",
 					symbol+":", totalStr, changeStr))
 
 				// Show network breakdown
 				for _, bal := range balances {
-					balStr := formatTokenAmountPrecise(bal.Balance, bal.Decimals, "")
+					balStr := formatTokenAmountSimple(bal.Balance, bal.Decimals)
 					msg.WriteString(fmt.Sprintf("    %-20s %12s", bal.Network+":", balStr))
 					if bal.Change != nil && bal.Change.Cmp(big.NewInt(0)) != 0 {
-						changeStr := formatTokenAmountPrecise(bal.Change, bal.Decimals, "")
+						changeStr := formatTokenAmountSimple(bal.Change, bal.Decimals)
 						msg.WriteString(fmt.Sprintf(" (%s)", changeStr))
 					}
 					msg.WriteString("\n")
@@ -327,29 +321,21 @@ func formatBalance(amount *big.Int, token string) string {
 	return formatted
 }
 
-// Use string-based arithmetic to avoid float precision issues
-func formatTokenAmountPrecise(amount *big.Int, decimals uint8, symbol string) string {
-	if amount == nil {
-		log.Printf("formatTokenAmountPrecise: amount is nil")
+// Simple string-based formatting that works
+func formatTokenAmountSimple(amount *big.Int, decimals uint8) string {
+	if amount == nil || amount.Cmp(big.NewInt(0)) == 0 {
 		return "0.0000"
 	}
 
-	if amount.Cmp(big.NewInt(0)) == 0 {
-		return "0.0000"
-	}
-
-	// Log the input values
-	log.Printf("formatTokenAmountPrecise: amount=%s, decimals=%d", amount.String(), decimals)
-
-	// Use string manipulation instead of big.Float
+	// Convert amount to string
 	amountStr := amount.String()
 
-	// Calculate where to place the decimal point
+	// Calculate where to place decimal
 	decimalPos := len(amountStr) - int(decimals)
 
 	var result string
 	if decimalPos <= 0 {
-		// Number is less than 1, need to pad with zeros
+		// Number is less than 1
 		zeros := strings.Repeat("0", -decimalPos)
 		result = "0." + zeros + amountStr
 	} else {
@@ -357,23 +343,17 @@ func formatTokenAmountPrecise(amount *big.Int, decimals uint8, symbol string) st
 		result = amountStr[:decimalPos] + "." + amountStr[decimalPos:]
 	}
 
-	// Ensure we have at least 4 decimal places
+	// Ensure 4 decimal places
 	dotIndex := strings.Index(result, ".")
 	if dotIndex == -1 {
 		result += ".0000"
 	} else {
-		decimalsAfterDot := len(result) - dotIndex - 1
-		if decimalsAfterDot < 4 {
-			result += strings.Repeat("0", 4-decimalsAfterDot)
-		} else if decimalsAfterDot > 4 {
-			result = result[:dotIndex+5] // Keep only 4 decimal places
+		afterDot := len(result) - dotIndex - 1
+		if afterDot < 4 {
+			result += strings.Repeat("0", 4-afterDot)
+		} else if afterDot > 4 {
+			result = result[:dotIndex+5]
 		}
-	}
-
-	log.Printf("formatTokenAmountPrecise: result='%s'", result)
-
-	if symbol != "" {
-		result += " " + symbol
 	}
 
 	return result
